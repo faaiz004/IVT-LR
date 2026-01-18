@@ -55,7 +55,7 @@ Interleaved Vision-Text Latent Reasoning (IVT-LR) is the first VLM framework tha
 
 <div align="center">
   <figure>
-    <img src="./assets/asset.png" alt="Overview" style="max-width: 100%; height: auto;">
+    <img src="./assets/image.png" alt="Overview" style="max-width: 100%; height: auto;">
     <br>
     <figcaption><em>Quick Overview of Project Name.</em></figcaption>
   </figure>
