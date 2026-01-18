@@ -49,7 +49,9 @@ Points:
 
 -->
 
-Welcome to **Project Name**! 👋Project Name is a flexible and scalable framework designed for **core purpose, e.g., multimodal retrieval, generative search, LLM-based reasoning**.  It offers a clean and modular design, making it easy for researchers and developers to build, extend, and evaluate advanced models and pipelines. This project provides an implementation of {main contribution or goal}, including training scripts, evaluation pipelines, and optional demo resources.
+Interleaved Vision-Text Latent Reasoning (IVT-LR) is the first VLM framework that unifies textual and visual representations in the latent space and implements multimodal latent reasoning. Specifically, IVT-LR represents each reasoning step by combining two implicit parts: ***latent text*** and ***latent vision***. We further introduce a progressive multi-stage training strategy to enable MLLMs to perform the above multimodal latent reasoning steps.
+
+![image.png](image.png)
 
 
 ### 🪐 Key Features
