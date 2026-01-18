@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="./assets/LOGO.png" alt="Project Logo" width="300">
-  <h1 align="center">Project Name: Short tagline</h1>
+  <h1 align="center">Reasoning in the Dark: Interleaved Vision-Text Reasoning in Latent Space</h1>
 </div>
 
 <div align="center">
@@ -57,7 +57,7 @@ Interleaved Vision-Text Latent Reasoning (IVT-LR) is the first VLM framework tha
   <figure>
     <img src="./assets/image.png" alt="Overview" style="max-width: 100%; height: auto;">
     <br>
-    <figcaption><em>Quick Overview of Project Name.</em></figcaption>
+    <figcaption><em>Quick Overview of IVT-LR.</em></figcaption>
   </figure>
 </div>
 
