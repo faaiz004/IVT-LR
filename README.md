@@ -81,202 +81,142 @@ Points:
 
 <div style="max-height: 240px; overflow-y: auto;">
 
-- **[2025.xx]** 📢📢 Exciting news! Our project has been accepted as a Spotlight paper at NeurIPS 2025!
+- **[2025.10]** Model files are now available on [Hugging Face](https://huggingface.co/FYYDCC/IVTLR) !
 
-- **[2025.xx]** 🎉🎉 We released a major upgrade including new benchmarks, UI, and documentation.
+<!-- - **[2025.xx]** 🎉🎉 We released a major upgrade including new benchmarks, UI, and documentation.
   - 📄 Paper: <a href="{paper_link}">arXiv</a>
   - 📊 Benchmark Suite: <a href="{benchmark_link}">Link</a>
-  - 🖥️ Web UI: {description}
+  - 🖥️ Web UI: {description} -->
 
-- **[2025.xx]** 🎉🎉Initial release of the project.
+- **[2025.10]** 🎉🎉Initial release of the project.
 
 </div>
 
-
-<!--
-Table of Contents
-
-REQUIRED:
-1. Quick Start
-2. How It Works (Method / Framework Overview)
-3. Community
-4. Acknowledgements
-5. Citation
-
-OPTIONAL:
-1. Documentation
-2. TODO List / Roadmap
-3. Examples
-4. How to Use
-5. More sections as needed.
-
--->
 
 ## 📑 Table of Contents <span id="table-of-contents"></span>
 
 
 * <a href='#quick-start'>🚀 Quick Start</a>
   * <a href='#installation'>Installation</a>
-  * <a href='#data'>Data</a>
-  * <a href='#running'>Running</a>
-<!-- * <a href='#examples'>⬇️ Examples</a> -->
+  * <a href='#data'>Data Preparation</a>
+  * <a href='#Training'>Training</a>
+    * <a href='#Qwen2-VL'>Qwen2-VL</a>
+    * <a href='#Chameleon'>Chameleon</a>
+    * <a href='#Arguments'>Training Arguments</a>
+  * <a href='#Inference'>Inference</a>
 * <a href='#how-it-works'>✨ How It Works</a>
-<!-- * * <a href='#documentation'>📖 Documentation</a> -->
-<!-- * <a href='#todo'>📝 TODO List</a> -->
 * <a href='#community'>🤝 Community</a>
 * <a href='#acknowledgements'>🌱 Acknowledgements</a>
 * <a href='#citation'>📚 Citation</a>
 
-
-<!--
-Quick Start (Very Detailed Guide)
-
-REQUIRED:
-1. Environment Installation
-   - Must include conda or virtualenv setup.
-   - Must include Python version requirements.
-   - Must list installation commands (pip or requirements.txt).
-   - Must include GPU/CPU dependency notes if necessary.
-
-2. Dataset Preparation
-   - Instructions for downloading datasets.
-   - Show expected folder structure.
-   - Provide scripts if applicable.
-   - If dataset is on HuggingFace, include "huggingface-cli" usage.
-
-3. Run the Project
-   - Must include detailed commands to run training and/or inference.
-   - Should include training or inference example.
-   - Should be copy-paste friendly.
-   - Must can replicate your main results using these instructions.
-
-OPTIONAL:
-1. API Keys Setup
-   - Required only if project calls external APIs (OpenAI, HF Inference, etc.).
-   - Provide environment variable examples: export, .env file, etc.
-
-2. Pretrained Checkpoints
-   - Links to ckpts (HF Hub, Google Drive, etc.)
-   - Instructions for loading the checkpoint.
-
-3. Launch UI / Demo
-   - Streamlit, Gradio, Web UI—add steps if relevant.
-
-4. Additional Examples
-   - Python code snippets, CLI examples, or config-based usage.
-
-5. Other points as needed.
-
--->
 
 ## 🚀 Quick Start <span id="quick-start"></span>
 
 
 ### 1. Installation <span id="installation"></span>
 
-#### **Conda (recommended)**
+Clone repo:
 
-```bash
-conda create -n {env_name} python=3.10 -y
-conda activate {env_name}
-pip install -r requirements.txt
+```
+git clone https://github.com/FYYDCC/IVT-LR.git
+cd IVT-LR
 ```
 
-#### **Pip + Virtualenv**
+Setup environment:
 
-```bash
-python3 -m venv {env_name}
-source {env_name}/bin/activate
-pip install -r requirements.txt
+```
+conda env create -f environment.yml
+conda activate ivtlr
 ```
 
-#### **Hardware Requirements (recommended to fill)**
+Expected folder structure
 
-* GPU: **{e.g., 16GB VRAM minimum}**
-* Python: **3.9 / 3.10**
-* CUDA: **{version}**
-* Frameworks: **PyTorch {version}, Transformers {version}, etc.**
-
+```plaintext
+IVT-LR/
+  ├── chameleon
+        ├── args/
+        ├── chameleon_dataset.py
+        ├── ...
+  ├── qwen_vl
+        ├── args/
+        ├── dataset.py
+        ├── ...
+  └── environment.yml
+```
 
 ### 2. Data Preparation <span id="data"></span>
 
-#### **Download datasets**
+Download datasets:
 
-```bash
-bash scripts/download_data.sh
+```
+dataset = load_dataset("LightChen2333/M3CoT")
+dataset = load_dataset("derek-thomas/ScienceQA")
 ```
 
 or download manually from:
-
 * {dataset_source_1}
 * {dataset_source_2}
 
-#### **Expected folder structure**
 
-```plaintext
-data/
-  ├── train/
-  ├── val/
-  ├── test/
-  └── metadata.json
+
+### 3. Training <span id="Training"></span>
+
+#### Qwen2-VL on M3CoT <span id="Qwen2-VL"></span>
+
+To train the Qwen2-VL model with IVT-LR on the M3CoT dataset:
+
 ```
-
-#### **Optional: preprocess data**
-
-```bash
-python scripts/preprocess.py --input data/raw --output data/processed
-```
-
-
-### 3. Running <span id="running"></span>
-
-#### **Basic inference**
-
-```bash
-python scripts/inference.py --input example.txt --output result.json
-```
-
-#### **Training example**
-
-```bash
-bash scripts/train.sh
-```
-
-or
-
-```bash
-python train.py --config configs/default.yaml
-```
-
-#### **Evaluation**
-
-```bash
-python evaluate.py --checkpoint checkpoints/{ckpt_name}.pt
+cd qwen_vl
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export NCCL_P2P_LEVEL=NVL   # if needed
+PYTHONUNBUFFERED=1 nohup deepspeed --master_port 29501 qwenvl_run.py args/qwen.yaml --deepspeed --deepspeed_config ds_config.json > qwenvl.log 2>&1 &
 ```
 
 
-#### 4. Other optional setups
+
+#### Chameleon on ScienceQA <span id="Chameleon"></span>
+
+For Chameleon:
+
+```
+cd chameleon
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export NCCL_P2P_LEVEL=NVL   # if needed
+PYTHONUNBUFFERED=1 nohup deepspeed --master_port 29501 chameleon_run_sqa.py args/chameleon.yaml --deepspeed --deepspeed_config ds_config.json > chameleon.log 2>&1 &
+```
 
 
-<!--
-How It Works (Methods Overview)
+#### Training Arguments <span id="Arguments"></span>
 
+Key parameters in configuration:
 
-GOALS OF THIS SECTION:
-1. Provide a clear and brief explanation of how the system or method works.
-2. Make this understandable even for readers who do not yet know the technical details.
+- `save_path`: Checkpoint save directory
+- `name`: Experiment name
+- `epochs_per_stage`: Epochs per latent reasoning stage (default: 4)
+- `max_latent_stage`: Maximum latent reasoning stages (default: 5)
+- `resume`: Resume epoch number (default: 0)
+- `batch_size_training`: Batch size per GPU (default: 4)
+- `gradient_accumulation_steps`: Gradient accumulation steps (default: 4)
+- `num_epochs`: Total training epochs (default: 16)
+- `lr`: Learning rate (default: 4e-5)
 
-Points:
-1. A high-level description of the system architecture or method.
-2. Key components/modules and their roles.
-3. A step-by-step workflow of the main process.
-4. Figures or diagrams to illustrate the method.
+### 4. Inference <span id="Inference"></span>
 
-Or:
+To generate the answer on the test split, run the inference code.
 
-you can organize in your own way as long as it meets the goals above!!!
+Qwen2-VL:
 
--->
+```
+export CUDA_VISIBLE_DEVICES=0
+nohup python infer.py > infer.log 2>&1 &    
+```
+
+Chameleon:
+
+```
+export CUDA_VISIBLE_DEVICES=0
+nohup python infer_chameleon_scienceqa.py > infer.log 2>&1 &    
+```
 
 ## ✨ How It Works <span id="how-it-works"></span>
 
@@ -316,60 +256,14 @@ OPTIONAL:
 
 ## 🤝 Join the Community <span id="community"></span>
 
-We welcome researchers, developers, and enthusiasts to join the **Project Name** community.  
-You can participate by reporting issues, contributing features, or sharing feedback to help us improve and grow the project. 
-
-<!-- Optional social groups -->
-<!-- - <a href="{slack_link}">Join our Slack workspace</a> — Ideal for research discussions and development updates.  
-- <a href="{discord_link}">Join our Discord server</a> — Community-driven space for questions, ideas, and feedback.  
-- <a href="{wechat_or_feishu_link}">Join our WeChat / Feishu group</a> — Regional/community group (optional).   -->
-
 <div align="center">
 
-<!-- Contributors -->
-**We thank all our contributors for their valuable contributions.**
-<a href="https://github.com/xxx/xxx/contributors">
-  <img src="https://contrib.rocks/image?repo=xxx/xxx" />
-</a>
-
-<br/><br/>
 
 <!-- Star history chart -->
 [![Star History Chart](https://api.star-history.com/svg?repos=xxx/xxx&type=Date)](https://star-history.com/xxx/xxx&Date)
 
 </div>
 
-
-<!--
-Acknowledgements & Citation
-
-
-ACKNOWLEDGEMENTS:
-1. Credit any external libraries, toolkits, or frameworks the project depends on.
-2. Cite related repositories if this project builds upon or is inspired by them.
-3. Acknowledge dataset sources if used.
-4. Claim on licensing or usage rights.
-  1. MIT License (default):
-     Use this for most research code releases when no usage restrictions are required.
-  2. Apache License 2.0:
-     Use this for larger frameworks or systems when explicit patent protection is desired.
-  3. Non-Commercial (NC):
-     Use this only when the project or data must restrict commercial usage.
-5. Acknowledge funding, labs, collaborators, or mentors (optional).
-
-
-CITATION:
-1. Provide BibTeX for the project’s paper.
-2. If the paper is not yet published, use an arXiv placeholder.
-
--->
-
-
-## 🌱 **Acknowledgements** <span id="acknowledgements"></span>
-
-An example: We would like to thank the contributors, open-source projects, and research communities whose work made **{Project Name}** possible. This project builds upon ideas, tools, and datasets developed by the broader machine learning and information retrieval ecosystem. 
-
-This project is licensed under the **License Name**. Please refer to the LICENSE file for more details.
 
 ### 🔗 Related Projects
 
