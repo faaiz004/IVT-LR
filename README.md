@@ -1,4 +1,4 @@
-`<a name="readme-top"></a>`
+<a name="readme-top"></a>
 
 <div align="center">
   <img src="./assets/LOGO.png" alt="Project Logo" width="300">
@@ -67,13 +67,12 @@ Interleaved Vision-Text Latent Reasoning (IVT-LR) is the first VLM framework tha
   * [Inference](#inference)
 * [✨ How It Works](#how-it-works)
 * [🤝 Community](#community)
-* [🌱 Acknowledgements](#acknowledgements)
 * [📚 Citation](#citation)
 
 
-* [🚀 Quick Start](#quick-start)
-  * [1. Installation](#1-installation)
+## 🚀 Quick Start <span id="quick-start"></span>
 
+### 1. Installation <span id="installation"></span>
 
 Clone repo:
 
@@ -104,7 +103,7 @@ IVT-LR/
   └── environment.yml
 ```
 
-### 2. Data Preparation `<span id="data">`
+### 2. Data Preparation <span id="data"></span>
 
 Download datasets:
 
@@ -118,9 +117,9 @@ or download manually from:
 * {dataset_source_1}
 * {dataset_source_2}
 
-### 3. Training `<span id="Training">`
+### 3. Training <span id="training"></span>
 
-#### Qwen2-VL on M3CoT `<span id="Qwen2-VL">`
+#### Qwen2-VL on M3CoT <span id="qwen2-vl"></span>
 
 To train the Qwen2-VL model with IVT-LR on the M3CoT dataset:
 
@@ -131,7 +130,7 @@ export NCCL_P2P_LEVEL=NVL   # if needed
 PYTHONUNBUFFERED=1 nohup deepspeed --master_port 29501 qwenvl_run.py args/qwen.yaml --deepspeed --deepspeed_config ds_config.json > qwenvl.log 2>&1 &
 ```
 
-#### Chameleon on ScienceQA `<span id="Chameleon">`
+#### Chameleon on ScienceQA <span id="chameleon"></span>
 
 For Chameleon:
 
@@ -142,7 +141,7 @@ export NCCL_P2P_LEVEL=NVL   # if needed
 PYTHONUNBUFFERED=1 nohup deepspeed --master_port 29501 chameleon_run_sqa.py args/chameleon.yaml --deepspeed --deepspeed_config ds_config.json > chameleon.log 2>&1 &
 ```
 
-#### Training Arguments `<span id="Arguments">`
+#### Training Arguments <span id="arguments"></span>
 
 Key parameters in configuration:
 
@@ -156,7 +155,7 @@ Key parameters in configuration:
 - `num_epochs`: Total training epochs (default: 16)
 - `lr`: Learning rate (default: 4e-5)
 
-### 4. Inference `<span id="Inference">`
+### 4. Inference <span id="inference"></span>
 
 To generate the answer on the test split, run the inference code.
 
@@ -174,7 +173,7 @@ export CUDA_VISIBLE_DEVICES=0
 nohup python infer_chameleon_scienceqa.py > infer.log 2>&1 &  
 ```
 
-## ✨ How It Works `<span id="how-it-works">`
+## ✨ How It Works <span id="how-it-works"></span>
 
 🪐 **Project Name** is built around a modular research pipeline for **{core capability}**, where each component corresponds to a well-defined stage in the overall method.
 The system separates representation, reasoning, and output stages into independent modules, allowing controlled experimentation and analysis.
@@ -209,7 +208,7 @@ OPTIONAL:
 
 -->
 
-## 🤝 Join the Community `<span id="community">`
+## 🤝 Join the Community <span id="community"></span>
 
 <div align="center">
 
@@ -244,7 +243,7 @@ OPTIONAL:
 
 </div>
 
-## 📚 **Citation** `<span id="citation">`
+## 📚 **Citation** <span id="citation"></span>
 
 If you use **IVT-LR** in your research or applications, please consider citing:
 
