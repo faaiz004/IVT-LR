@@ -61,7 +61,6 @@ Interleaved Vision-Text Latent Reasoning (IVT-LR) is the first VLM framework tha
     * [Training Arguments](#arguments)
   * [Inference](#inference)
 * [✨ How It Works](#how-it-works)
-* [🤝 Community](#community)
 * [🔗 Related Projects](#related)
 * [📚 Citation](#citation)
 
@@ -181,16 +180,6 @@ At a high level, the workflow proceeds as follows:
 
 3. **Dynamic Attention Allocation** — A key insight from our analysis is that interleaved multimodal reasoning leads to dynamic attention redistribution. As reasoning progresses, the model adaptively shifts attention between visual and textual tokens based on task demands, significantly enhancing visual perception capabilities.
 
-
-## 🤝 Join the Community <span id="community"></span>
-
-<div align="center">
-
-<!-- Star history chart -->
-
-[![Star History Chart](https://api.star-history.com/svg?repos=xxx/xxx&type=Date)](https://star-history.com/xxx/xxx&Date)
-
-</div>
 
 ## 🔗 **Related Projects** <span id="related"></span>
 
