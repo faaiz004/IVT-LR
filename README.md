@@ -18,6 +18,10 @@
     <img src="https://img.shields.io/badge/HuggingFace-Models-fcc21b?style=for-the-badge&logo=huggingface&logoColor=white" alt="HF Models">
   </a>
 
+<a href="https://huggingface.co/papers/2510.12603">
+    <img src="https://img.shields.io/badge/HuggingFace-Papers-fcc21b?style=for-the-badge&logo=huggingface&logoColor=white" alt="HF Papers"   height="18">
+  </a>
+
 </div>
 
 
