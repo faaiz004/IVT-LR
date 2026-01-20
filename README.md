@@ -169,15 +169,26 @@ Key parameters in configuration:
 
 To generate the answer on the test split, run the inference code.
 
-Qwen2-VL:
+Qwen2-VL on M3CoT:
 
 ```
 export CUDA_VISIBLE_DEVICES=0
 nohup python infer.py > infer.log 2>&1 &  
 ```
 
-Chameleon:
+Qwen2-VL on ScienceQA:
+```
+export CUDA_VISIBLE_DEVICES=0
+nohup python infer_sqa.py > infer.log 2>&1 &  
+```
 
+Chameleon on M3CoT:
+```
+export CUDA_VISIBLE_DEVICES=0
+nohup python infer_chameleon.py > infer.log 2>&1 &  
+```
+
+Chameleon on ScienceQA:
 ```
 export CUDA_VISIBLE_DEVICES=0
 nohup python infer_chameleon_scienceqa.py > infer.log 2>&1 &  
