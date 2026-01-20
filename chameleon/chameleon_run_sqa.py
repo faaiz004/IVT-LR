@@ -168,7 +168,6 @@ def main():
 
     def process_example(example):
         example["answer"] = str(example["answer"])
-        # rationale：merge lecture and solution
         lecture = example.get("lecture", "") or ""
         solution = example.get("solution", "") or ""
         
@@ -223,7 +222,6 @@ def main():
         
         example["question"] = f"[Question]:{question_with_braces}\n{choices_str}"
         
-        # 删除不需要的列
         if "lecture" in example:
             del example["lecture"]
         if "solution" in example:
@@ -233,11 +231,8 @@ def main():
         
         return example
     print("start dataset")
-    # 处理 train 数据集
-
     
     def has_image(example):
-        # 检查 "image" 和 "choice" 是否存在且非空
         return (
             "image" in example and example["image"] is not None
         )

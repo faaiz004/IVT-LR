@@ -6,12 +6,6 @@
 
 <div align="center">
 
-<!-- Project Page -->
-
-<a href="https://github.com/ModalityDance/IVT-LR">
-    <img src="https://img.shields.io/badge/Project-Page-6a5acd?style=for-the-badge" alt="Project Page">
-  </a>
-
 <!-- Paper Link -->
 
 <a href="https://arxiv.org/abs/2510.12603">
