@@ -14,7 +14,7 @@
 
 <!-- HuggingFace Models -->
 
-<a href="https://huggingface.co/ModalityDance/IVT-LR">
+<a href="https://huggingface.co/collections/ModalityDance/ivt-lr">
     <img src="https://img.shields.io/badge/HuggingFace-Models-fcc21b?style=for-the-badge&logo=huggingface&logoColor=white" alt="HF Models">
   </a>
 
@@ -40,7 +40,7 @@ Interleaved Vision-Text Latent Reasoning (IVT-LR) is the first VLM framework tha
 
 <div style="max-height: 240px; overflow-y: auto;">
 
-- **[2025.10]** Model files are now available on [Hugging Face](https://huggingface.co/ModalityDance/IVT-LR) !
+- **[2026.01]** Model files are now available on [Hugging Face](https://huggingface.co/collections/ModalityDance/ivt-lr) !
 
 - **[2025.10]** 🎉🎉Initial release of the project.
 
@@ -110,6 +110,8 @@ or download manually from:
 * [ScienceQA](https://huggingface.co/datasets/derek-thomas/ScienceQA)
 
 ### 3. Training <span id="training"></span>
+
+> **💡 Skip Training:** If you want to skip training and directly run inference, you can download our pretrained models from the [IVT-LR Collection](https://huggingface.co/collections/ModalityDance/ivt-lr) on Hugging Face.
 
 #### Qwen2-VL <span id="qwen2-vl"></span>
 
