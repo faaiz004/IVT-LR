@@ -15,3 +15,4 @@ debug: False
 gradient_accumulation_steps: 8
 num_epochs: 16
 lr: !!float "4e-5"
+patch_reuse_policy: never

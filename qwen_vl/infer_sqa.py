@@ -21,8 +21,9 @@ logging.basicConfig(
 import pdb
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+PATCH_REUSE_POLICY = "never"
 
-def load_inference_model(checkpoint_path):
+def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
     tokenizer = AutoTokenizer.from_pretrained(
         "Qwen/Qwen2-VL-7B-Instruct",
@@ -75,7 +76,8 @@ def load_inference_model(checkpoint_path):
         eos_token_id=tokenizer.eos_token_id,
         image_token_id=image_token_id,
         visual_start_id=visual_start_id, 
-        visual_end_id=visual_end_id
+        visual_end_id=visual_end_id,
+        patch_reuse_policy=patch_reuse_policy,
     )
     
     state_dict = torch.load(checkpoint_path, map_location="cpu")
@@ -91,7 +93,7 @@ def load_inference_model(checkpoint_path):
     model.eval()
     return model, processor, tokenizer
 
-model, processor, tokenizer = load_inference_model("your_path")
+model, processor, tokenizer = load_inference_model("your_path", patch_reuse_policy=PATCH_REUSE_POLICY)
 
 os.makedirs("output", exist_ok=True)
 

@@ -18,8 +18,9 @@ logging.basicConfig(
 )
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
+PATCH_REUSE_POLICY = "never"
 
-def load_inference_model(checkpoint_path):
+def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
     processor = ChameleonProcessor.from_pretrained("facebook/chameleon-7b")
     tokenizer = processor.tokenizer
     tokenizer.padding_side = "right"
@@ -65,6 +66,7 @@ def load_inference_model(checkpoint_path):
         end_latent_id=end_id,
         eos_token_id=tokenizer.eos_token_id,
         image_token_id=image_token_id,
+        patch_reuse_policy=patch_reuse_policy,
     )
     
     state_dict = torch.load(checkpoint_path, map_location="cpu")
@@ -78,7 +80,7 @@ def load_inference_model(checkpoint_path):
     model.eval()
     return model, processor, tokenizer
 
-model, processor, tokenizer = load_inference_model("your_pth_path")
+model, processor, tokenizer = load_inference_model("your_pth_path", patch_reuse_policy=PATCH_REUSE_POLICY)
 
 os.makedirs("output", exist_ok=True)
 

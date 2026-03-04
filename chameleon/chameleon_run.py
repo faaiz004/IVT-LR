@@ -71,6 +71,8 @@ def main():
     parser.add_argument("--deepspeed", action="store_true", help="Enable DeepSpeed")
     parser.add_argument("--deepspeed_config", default="ds_config.json", help="DeepSpeed config path")
     parser.add_argument("--local_rank", type=int, default=-1, help="Local rank passed by DeepSpeed")
+    parser.add_argument("--patch_reuse_policy", choices=["never", "next_step_only", "always"], default=None,
+                        help="Patch selection reuse policy across latent reasoning steps")
     args = parser.parse_args()
 
     # Initialize DeepSpeed
@@ -85,6 +87,7 @@ def main():
         config_dict = yaml.safe_load(f)
 
     configs = Config(config_dict)
+    patch_reuse_policy = args.patch_reuse_policy or getattr(configs, "patch_reuse_policy", "never")
     set_seed(configs.seed)
     save_dir = os.path.join(configs.save_path, configs.name)
 
@@ -144,7 +147,15 @@ def main():
     
     model.print_trainable_parameters()
 
-    model = IVTLR(model, latent_id, start_id, end_id, tokenizer.eos_token_id, image_token_id)
+    model = IVTLR(
+        model,
+        latent_id,
+        start_id,
+        end_id,
+        tokenizer.eos_token_id,
+        image_token_id,
+        patch_reuse_policy=patch_reuse_policy,
+    )
 
     print(f"Running Deepspeed on rank = {rank}, world size = {world_size}")
     model = model.to(rank)

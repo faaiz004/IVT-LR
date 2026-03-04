@@ -31,6 +31,7 @@ class IVTLR(nn.Module):
         visual_start_id,
         visual_end_id,
         num_selected_patches: int = 32,
+        patch_reuse_policy: str = "never",
     ):
 
         super(IVTLR, self).__init__()
@@ -44,6 +45,10 @@ class IVTLR(nn.Module):
         self.visual_start_id = visual_start_id
         self.visual_end_id = visual_end_id
         self.num_selected_patches = num_selected_patches
+        valid_policies = {"never", "next_step_only", "always"}
+        if patch_reuse_policy not in valid_policies:
+            raise ValueError(f"Invalid patch_reuse_policy={patch_reuse_policy}. Expected one of {valid_policies}.")
+        self.patch_reuse_policy = patch_reuse_policy
 
         # tested with GPT2 and Llama3
         if isinstance(self.base_causallm, GPT2LMHeadModel):
@@ -99,6 +104,7 @@ class IVTLR(nn.Module):
         max_len = 3000
         image_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
         image_mask[:, :S] = image_mask_init
+        recently_selected_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
 
 
         for b in range(B):
@@ -159,12 +165,15 @@ class IVTLR(nn.Module):
                 avg_attn = torch.cat(attentions, dim=1).mean(dim=1)  # (B, seq_len)
                 current_seq_len = avg_attn.size(1)
                 select_image_embeds = []
+                current_selected_mask = torch.zeros_like(image_mask)
 
                 for b in range(B):
                     last_attn = avg_attn[b, end - 1]  # shape=(seq_len,)
                     vs, ve = vs_pos_per_batch[b], ve_pos_per_batch[b]
                     scores = last_attn.clone()
                     allowed_positions = image_mask[b, :current_seq_len]  # shape=(S,)
+                    if self.patch_reuse_policy == "next_step_only":
+                        allowed_positions = allowed_positions & (~recently_selected_mask[b, :current_seq_len])
                     invalid = ~allowed_positions
                     scores[invalid] = float("-inf")
 
@@ -173,7 +182,10 @@ class IVTLR(nn.Module):
                     abs_idxs = (vs + 1) + topk_rel
                     logging.debug(f"topk_rel: {topk_rel}")
                     logging.debug(f"abs idx: {abs_idxs}")
-                    image_mask[b, abs_idxs] = False
+                    if self.patch_reuse_policy == "never":
+                        image_mask[b, abs_idxs] = False
+                    elif self.patch_reuse_policy == "next_step_only":
+                        current_selected_mask[b, abs_idxs] = True
 
                     picked = inputs_embeds[b, abs_idxs, :]  # (K, D)
                     select_image_embeds.append(picked)
@@ -193,6 +205,7 @@ class IVTLR(nn.Module):
                 new_position_ids = []
                 new_original_mask = []
                 new_image_mask = []
+                new_recently_selected_mask = []
                 batch_max_len = 0
 
                 for b in range(B):
@@ -228,6 +241,14 @@ class IVTLR(nn.Module):
                     merged_img = torch.cat([img_pref, img_v, img_suf], dim=0)
                     new_image_mask.append(merged_img)
 
+                    # recently_selected_mask (for next_step_only)
+                    if self.patch_reuse_policy == "next_step_only":
+                        recent_pref = current_selected_mask[b, :end_b]
+                        recent_suf  = current_selected_mask[b, end_b:]
+                        recent_v    = torch.zeros(self.num_selected_patches, device=input_ids.device, dtype=torch.bool)
+                        merged_recent = torch.cat([recent_pref, recent_v, recent_suf], dim=0)
+                        new_recently_selected_mask.append(merged_recent)
+
                     batch_max_len = max(batch_max_len, merged_b.size(0))
 
                 padded_embeds = []
@@ -235,6 +256,7 @@ class IVTLR(nn.Module):
                 padded_pos   = []
                 padded_orig  = []
                 padded_img   = []
+                padded_recent = []
 
                 for b in range(B):
                     emb_b = new_inputs_embeds[b]
@@ -248,12 +270,17 @@ class IVTLR(nn.Module):
                     padded_pos.append(pos_b.unsqueeze(0))
                     padded_orig.append(orig_b.unsqueeze(0))
                     padded_img.append(img_b.unsqueeze(0))
+                    if self.patch_reuse_policy == "next_step_only":
+                        recent_b = new_recently_selected_mask[b]
+                        padded_recent.append(recent_b.unsqueeze(0))
 
                 inputs_embeds = torch.cat(padded_embeds, dim=0)    
                 attention_mask = torch.cat(padded_att, dim=0)      
                 position_ids    = torch.cat(padded_pos, dim=0)     
                 original_mask  = torch.cat(padded_orig, dim=0)
                 image_mask     = torch.cat(padded_img, dim=0)   # (B, new_S)
+                if self.patch_reuse_policy == "next_step_only":
+                    recently_selected_mask = torch.cat(padded_recent, dim=0)
                 K = self.num_selected_patches
                 for b in range(B):
                     for i, pos in enumerate(latent_lists[b]):
