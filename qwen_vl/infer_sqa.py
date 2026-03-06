@@ -21,7 +21,7 @@ logging.basicConfig(
 import pdb
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-PATCH_REUSE_POLICY = "never"
+PATCH_REUSE_POLICY = "always"
 
 def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
