@@ -71,6 +71,10 @@ def main():
     parser.add_argument("--local_rank", type=int, default=-1, help="Local rank passed by DeepSpeed")
     parser.add_argument("--patch_reuse_policy", choices=["never", "next_step_only", "always"], default=None,
                         help="Patch selection reuse policy across latent reasoning steps")
+    parser.add_argument("--resume_epoch", type=int, default=None,
+                        help="Epoch index to resume from (0-based). Overrides config resume.")
+    parser.add_argument("--resume_model_path", type=str, default=None,
+                        help="Path to a saved model state_dict (.pth) for resuming training.")
     args = parser.parse_args()
 
     # Initialize DeepSpeed
@@ -86,6 +90,8 @@ def main():
 
     configs = Config(config_dict)
     patch_reuse_policy = args.patch_reuse_policy or getattr(configs, "patch_reuse_policy", "never")
+    start_epoch = args.resume_epoch if args.resume_epoch is not None else int(getattr(configs, "resume", 0))
+    resume_model_path = args.resume_model_path or getattr(configs, "load_model_path", None)
     set_seed(configs.seed)
     save_dir = os.path.join(configs.save_path, configs.name)
 
@@ -97,16 +103,18 @@ def main():
     cur_ckpts = os.listdir(save_dir)
 
 
-    # check if the job is preempted and resumed.
-    if len(cur_ckpts) > 0 and rank == 0:
+    # Non-empty save dir is valid when resuming; block only for fresh runs.
+    if len(cur_ckpts) > 0 and rank == 0 and start_epoch == 0:
         raise ValueError(
             f"Save directory {save_dir} is not empty! "
         )
 
-    if configs.resume != 0:
-        # by setting `resume`, we can skip a few epoches at the beginning.
-        print(
-            f"Loading from {configs.load_model_path} and skip the first {configs.resume} epochs"
+    if start_epoch > 0 and rank == 0:
+        print(f"Resume requested from epoch {start_epoch}")
+        print(f"Resume checkpoint path: {resume_model_path}")
+    if start_epoch > 0 and not resume_model_path:
+        raise ValueError(
+            "Resuming requires a checkpoint path. Set --resume_model_path or load_model_path in the config."
         )
         
         
@@ -162,6 +170,21 @@ def main():
         visual_end_id,
         patch_reuse_policy=patch_reuse_policy,
     )
+
+    if start_epoch > 0:
+        if not os.path.exists(resume_model_path):
+            raise ValueError(f"Checkpoint not found: {resume_model_path}")
+        if rank == 0:
+            print(f"Loading model weights from {resume_model_path}")
+        state_dict = torch.load(resume_model_path, map_location="cpu")
+        if any(k.startswith("module.") for k in state_dict.keys()):
+            state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+        load_result = model.load_state_dict(state_dict, strict=False)
+        if rank == 0:
+            print(
+                f"Checkpoint loaded. Missing keys: {len(load_result.missing_keys)}, "
+                f"Unexpected keys: {len(load_result.unexpected_keys)}"
+            )
 
     print(f"Running Deepspeed on rank = {rank}, world size = {world_size}")
     model = model.to(rank)
@@ -274,7 +297,7 @@ def main():
     collator = MyCollator(tokenizer, latent_id=latent_id, label_pad_token_id=-100)
 
 
-    for epoch in range(configs.resume, configs.num_epochs):
+    for epoch in range(start_epoch, configs.num_epochs):
 
         scheduled_stage = epoch // configs.epochs_per_stage
 
