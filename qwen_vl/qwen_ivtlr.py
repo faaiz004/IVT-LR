@@ -15,7 +15,7 @@ import pdb
 from transformers.cache_utils import DynamicCache
 
 Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits"])
-MAX_N_LATENT = 4
+MAX_N_LATENT = 4 
 
 
 class IVTLR(nn.Module):
@@ -104,6 +104,7 @@ class IVTLR(nn.Module):
         max_len = 3000
         image_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
         image_mask[:, :S] = image_mask_init
+        trace_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
         recently_selected_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
 
 
@@ -171,19 +172,78 @@ class IVTLR(nn.Module):
                     last_attn = avg_attn[b, end - 1]  # shape=(seq_len,)
                     vs, ve = vs_pos_per_batch[b], ve_pos_per_batch[b]
                     scores = last_attn.clone()
-                    allowed_positions = image_mask[b, :current_seq_len]  # shape=(S,)
-                    if self.patch_reuse_policy == "next_step_only":
-                        allowed_positions = allowed_positions & (~recently_selected_mask[b, :current_seq_len])
-                    invalid = ~allowed_positions
-                    scores[invalid] = float("-inf")
 
-                    rel_scores = scores[vs+1 : ve]  # (image_len,)
-                    topk_rel = rel_scores.topk(self.num_selected_patches, sorted=False)[1]  # rel idx
-                    abs_idxs = (vs + 1) + topk_rel
-                    logging.debug(f"topk_rel: {topk_rel}")
+                    image_allowed_positions = image_mask[b, :current_seq_len]
+                    trace_allowed_positions = trace_mask[b, :current_seq_len]
+                    if self.patch_reuse_policy == "next_step_only":
+                        not_recent = ~recently_selected_mask[b, :current_seq_len]
+                        image_allowed_positions = image_allowed_positions & not_recent
+                        trace_allowed_positions = trace_allowed_positions & not_recent
+
+                    if pass_idx == 0:
+                        image_quota = self.num_selected_patches
+                        trace_quota = 0
+                    else:
+                        trace_quota = self.num_selected_patches // 2
+                        image_quota = self.num_selected_patches - trace_quota
+
+                    image_scores = scores.clone()
+                    image_invalid = ~image_allowed_positions
+                    image_scores[image_invalid] = float("-inf")
+                    image_rel_scores = image_scores[vs + 1 : ve]
+                    n_image_candidates = int(image_allowed_positions[vs + 1 : ve].sum().item())
+                    image_take = min(image_quota, n_image_candidates)
+                    if image_take > 0:
+                        topk_image_rel = image_rel_scores.topk(image_take, sorted=False)[1]
+                        image_abs_idxs = (vs + 1) + topk_image_rel
+                    else:
+                        image_abs_idxs = torch.empty(0, dtype=torch.long, device=input_ids.device)
+
+                    trace_scores = scores.clone()
+                    trace_invalid = ~trace_allowed_positions
+                    trace_scores[trace_invalid] = float("-inf")
+                    n_trace_candidates = int(trace_allowed_positions.sum().item())
+                    trace_take = min(trace_quota, n_trace_candidates)
+                    if trace_take > 0:
+                        trace_abs_idxs = trace_scores.topk(trace_take, sorted=False)[1]
+                    else:
+                        trace_abs_idxs = torch.empty(0, dtype=torch.long, device=input_ids.device)
+
+                    abs_idxs = torch.cat([image_abs_idxs, trace_abs_idxs], dim=0)
+
+                    if abs_idxs.numel() < self.num_selected_patches:
+                        combined_allowed = image_allowed_positions | trace_allowed_positions
+                        if abs_idxs.numel() > 0:
+                            combined_allowed[abs_idxs] = False
+                        combined_scores = scores.clone()
+                        combined_scores[~combined_allowed] = float("-inf")
+                        n_extra_candidates = int(combined_allowed.sum().item())
+                        n_to_fill = min(self.num_selected_patches - abs_idxs.numel(), n_extra_candidates)
+                        if n_to_fill > 0:
+                            extra_abs_idxs = combined_scores.topk(n_to_fill, sorted=False)[1]
+                            abs_idxs = torch.cat([abs_idxs, extra_abs_idxs], dim=0)
+
+                    if abs_idxs.numel() < self.num_selected_patches:
+                        n_to_fill = self.num_selected_patches - abs_idxs.numel()
+                        if abs_idxs.numel() > 0:
+                            # Keep selection pool restricted to image/trace by padding from selected indices.
+                            repeat_count = (n_to_fill + abs_idxs.numel() - 1) // abs_idxs.numel()
+                            pad_abs_idxs = abs_idxs.repeat(repeat_count)[:n_to_fill]
+                            abs_idxs = torch.cat([abs_idxs, pad_abs_idxs], dim=0)
+                        else:
+                            # Safety fallback: only sample from original image span, never generic context tokens.
+                            image_span_scores = scores.clone()
+                            allowed_image_span = torch.zeros_like(image_span_scores, dtype=torch.bool)
+                            allowed_image_span[vs + 1 : ve] = True
+                            image_span_scores[~allowed_image_span] = float("-inf")
+                            abs_idxs = image_span_scores.topk(self.num_selected_patches, sorted=False)[1]
+
+                    logging.debug(f"selected image idx: {image_abs_idxs}")
+                    logging.debug(f"selected trace idx: {trace_abs_idxs}")
                     logging.debug(f"abs idx: {abs_idxs}")
                     if self.patch_reuse_policy == "never":
                         image_mask[b, abs_idxs] = False
+                        trace_mask[b, abs_idxs] = False
                     elif self.patch_reuse_policy == "next_step_only":
                         current_selected_mask[b, abs_idxs] = True
 
@@ -205,6 +265,7 @@ class IVTLR(nn.Module):
                 new_position_ids = []
                 new_original_mask = []
                 new_image_mask = []
+                new_trace_mask = []
                 new_recently_selected_mask = []
                 batch_max_len = 0
 
@@ -241,6 +302,13 @@ class IVTLR(nn.Module):
                     merged_img = torch.cat([img_pref, img_v, img_suf], dim=0)
                     new_image_mask.append(merged_img)
 
+                    # trace_mask
+                    trace_pref = trace_mask[b, :end_b]
+                    trace_suf  = trace_mask[b, end_b:]
+                    trace_v    = torch.ones(self.num_selected_patches, device=input_ids.device, dtype=torch.bool)
+                    merged_trace = torch.cat([trace_pref, trace_v, trace_suf], dim=0)
+                    new_trace_mask.append(merged_trace)
+
                     # recently_selected_mask (for next_step_only)
                     if self.patch_reuse_policy == "next_step_only":
                         recent_pref = current_selected_mask[b, :end_b]
@@ -256,6 +324,7 @@ class IVTLR(nn.Module):
                 padded_pos   = []
                 padded_orig  = []
                 padded_img   = []
+                padded_trace = []
                 padded_recent = []
 
                 for b in range(B):
@@ -264,12 +333,14 @@ class IVTLR(nn.Module):
                     pos_b = new_position_ids[b]
                     orig_b = new_original_mask[b]
                     img_b = new_image_mask[b]
+                    trace_b = new_trace_mask[b]
 
                     padded_embeds.append(emb_b.unsqueeze(0))
                     padded_att.append(att_b.unsqueeze(0))
                     padded_pos.append(pos_b.unsqueeze(0))
                     padded_orig.append(orig_b.unsqueeze(0))
                     padded_img.append(img_b.unsqueeze(0))
+                    padded_trace.append(trace_b.unsqueeze(0))
                     if self.patch_reuse_policy == "next_step_only":
                         recent_b = new_recently_selected_mask[b]
                         padded_recent.append(recent_b.unsqueeze(0))
@@ -279,6 +350,7 @@ class IVTLR(nn.Module):
                 position_ids    = torch.cat(padded_pos, dim=0)     
                 original_mask  = torch.cat(padded_orig, dim=0)
                 image_mask     = torch.cat(padded_img, dim=0)   # (B, new_S)
+                trace_mask     = torch.cat(padded_trace, dim=0)
                 if self.patch_reuse_policy == "next_step_only":
                     recently_selected_mask = torch.cat(padded_recent, dim=0)
                 K = self.num_selected_patches
