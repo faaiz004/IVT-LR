@@ -250,7 +250,7 @@ def main():
             "image" in example and example["image"] is not None
         )
 
-    train_dataset = dataset["train"].select(range(20)).filter(has_image)
+    train_dataset = dataset["train"].filter(has_image)
     train_dataset = train_dataset.map(process_example, num_proc=32)
 
 
