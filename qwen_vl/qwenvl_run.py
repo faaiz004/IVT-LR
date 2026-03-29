@@ -75,6 +75,8 @@ def main():
                         help="Epoch index to resume from (0-based). Overrides config resume.")
     parser.add_argument("--resume_model_path", type=str, default=None,
                         help="Path to a saved model state_dict (.pth) for resuming training.")
+    parser.add_argument("--num_proc", type=int, default=None,
+                        help="Number of subprocesses for dataset.map. Overrides config num_proc.")
     args = parser.parse_args()
 
     # Initialize DeepSpeed
@@ -92,6 +94,7 @@ def main():
     patch_reuse_policy = args.patch_reuse_policy or getattr(configs, "patch_reuse_policy", "never")
     start_epoch = args.resume_epoch if args.resume_epoch is not None else int(getattr(configs, "resume", 0))
     resume_model_path = args.resume_model_path or getattr(configs, "load_model_path", None)
+    num_proc = args.num_proc if args.num_proc is not None else int(getattr(configs, "num_proc", 32))
     set_seed(configs.seed)
     save_dir = os.path.join(configs.save_path, configs.name)
 
@@ -112,6 +115,9 @@ def main():
     if start_epoch > 0 and rank == 0:
         print(f"Resume requested from epoch {start_epoch}")
         print(f"Resume checkpoint path: {resume_model_path}")
+        print(f"Dataset map num_proc: {num_proc}")
+    elif rank == 0:
+        print(f"Dataset map num_proc: {num_proc}")
     if start_epoch > 0 and not resume_model_path:
         raise ValueError(
             "Resuming requires a checkpoint path. Set --resume_model_path or load_model_path in the config."
@@ -274,11 +280,15 @@ def main():
         )
 
     train_dataset = dataset["train"].filter(has_image)
-    train_dataset = train_dataset.map(process_example, num_proc=32)
+    train_dataset = train_dataset.map(process_example, num_proc=num_proc)
 
 
     base_dataset_train = get_dataset(
-        train_dataset, tokenizer, processor, max_size=5000 if configs.debug else 100000000
+        train_dataset,
+        tokenizer,
+        processor,
+        max_size=5000 if configs.debug else 100000000,
+        num_proc=num_proc,
     )
 
     total_train_steps = 0

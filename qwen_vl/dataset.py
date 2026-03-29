@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 
 
-def get_dataset(dataset, tokenizer, processor, max_size=1000000000):
+def get_dataset(dataset, tokenizer, processor, max_size=1000000000, num_proc=32):
 
     def tokenize_sample(sample, max_length=3400):
         image = sample["image"]
@@ -87,7 +87,7 @@ def get_dataset(dataset, tokenizer, processor, max_size=1000000000):
         if dist.get_rank() == 0:
             processed_dataset = [
                 dataset.map(
-                    tokenize_sample, remove_columns=list(dataset.features), num_proc=32
+                    tokenize_sample, remove_columns=list(dataset.features), num_proc=num_proc
                 )
             ]
         else:
@@ -97,7 +97,7 @@ def get_dataset(dataset, tokenizer, processor, max_size=1000000000):
 
     else:
         dataset = dataset.map(
-            tokenize_sample, remove_columns=list(dataset.features), num_proc=32
+            tokenize_sample, remove_columns=list(dataset.features), num_proc=num_proc
         )
 
     return dataset
