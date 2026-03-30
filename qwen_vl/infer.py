@@ -12,6 +12,7 @@ import json
 import os
 import time
 from datetime import timedelta
+import argparse
 logging.basicConfig(
     filename='qwenvl_32_infer_time.log',
     level=logging.DEBUG,
@@ -21,7 +22,7 @@ logging.basicConfig(
 import pdb
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-PATCH_REUSE_POLICY = "always"
+DEFAULT_PATCH_REUSE_POLICY = "always"
 
 def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
@@ -93,10 +94,6 @@ def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
     model.eval()
     return model, processor, tokenizer
 
-model, processor, tokenizer = load_inference_model("your_path", patch_reuse_policy=PATCH_REUSE_POLICY)
-
-os.makedirs("output", exist_ok=True)
-
 def format_prompt(example):
     question = example["question"].strip()
     rationale = example["rationale"].replace("\n", " ").strip()
@@ -125,18 +122,23 @@ def process_func(example):
         "topic": example["topic"]
     }
 
-dataset = load_dataset("LightChen2333/M3CoT")
-val_dataset = dataset["test"]
-val_dataset = val_dataset.filter(lambda e: e["image"] is not None).map(process_func)
+def build_eval_dataset():
+    dataset = load_dataset("LightChen2333/M3CoT")
+    val_dataset = dataset["test"]
+    return val_dataset.filter(lambda e: e["image"] is not None).map(process_func)
 
-def evaluate_and_save(eval_dataset, model, processor):
+
+def evaluate_and_save(eval_dataset, model, processor, output_path, latent_n=3, max_new_tokens=512):
     model.eval()
     correct = 0
     total = 0
     total_generated_tokens = 0 
     total_generate_time = 0.0  
-    
-    output_path = "output/qwen2vl_32.jsonl"
+
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
     with open(output_path, "a", encoding="utf-8") as f_out:
         for ex in eval_dataset:
             input_text = ex["question_raw"]
@@ -148,7 +150,7 @@ def evaluate_and_save(eval_dataset, model, processor):
                 ]
             }]
             text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            text = text + "<|latent|>" + "<|latent|>" + "<|latent|>"
+            text = text + ("<|latent|>" * latent_n)
             image_inputs, video_inputs = process_vision_info(messages)
             inputs = processor(
                 text=[text],
@@ -167,7 +169,7 @@ def evaluate_and_save(eval_dataset, model, processor):
                     attention_mask=torch.tensor(inputs["attention_mask"]),
                     pixel_values=torch.tensor(inputs["pixel_values"]),
                     image_grid_thw=torch.tensor(inputs["image_grid_thw"]),
-                    max_new_tokens=512
+                    max_new_tokens=max_new_tokens
                 )
             generate_end_time = time.time()
             sample_generate_time = generate_end_time - generate_start_time
@@ -226,5 +228,36 @@ def evaluate_and_save(eval_dataset, model, processor):
         logging.info(f"[FINAL] Avg generated tokens per sample: {avg_generated_tokens:.1f}")
         logging.info(f"[FINAL] Total generate time: {total_generate_time:.2f}s ({timedelta(seconds=int(total_generate_time))})")
         logging.info(f"[FINAL] Avg generate time per sample: {avg_time_per_sample:.3f}s")
-    
-evaluate_and_save(val_dataset, model, processor)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Qwen2-VL IVTLR inference on M3CoT")
+    parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to model state_dict checkpoint (.pth)")
+    parser.add_argument("--latent_n", type=int, default=3, help="Number of <|latent|> tokens appended to the prompt")
+    parser.add_argument("--patch_reuse_policy", type=str, default=DEFAULT_PATCH_REUSE_POLICY,
+                        choices=["never", "next_step_only", "always"],
+                        help="Patch selection reuse policy during generation")
+    parser.add_argument("--output_path", type=str, default="output/qwen2vl_32.jsonl", help="Path to write JSONL predictions")
+    parser.add_argument("--max_new_tokens", type=int, default=512, help="Maximum generated tokens per sample")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    model, processor, _ = load_inference_model(
+        args.checkpoint_path,
+        patch_reuse_policy=args.patch_reuse_policy,
+    )
+    val_dataset = build_eval_dataset()
+    evaluate_and_save(
+        val_dataset,
+        model,
+        processor,
+        output_path=args.output_path,
+        latent_n=args.latent_n,
+        max_new_tokens=args.max_new_tokens,
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -12,6 +12,7 @@ import json
 import os
 import time
 from datetime import timedelta
+import argparse
 logging.basicConfig(
     filename='qwenvl_32_infer_time.log',
     level=logging.DEBUG,
@@ -21,7 +22,7 @@ logging.basicConfig(
 import pdb
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-PATCH_REUSE_POLICY = "always"
+DEFAULT_PATCH_REUSE_POLICY = "always"
 
 def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
@@ -93,10 +94,6 @@ def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
     model.eval()
     return model, processor, tokenizer
 
-model, processor, tokenizer = load_inference_model("your_path", patch_reuse_policy=PATCH_REUSE_POLICY)
-
-os.makedirs("output", exist_ok=True)
-
 def format_prompt(example):
     question = example["question"].strip()
     answer = example["answer"] 
@@ -125,26 +122,30 @@ def process_func(example, idx):
         "gt_answer": answer,  
     }
 
-dataset = load_dataset("derek-thomas/ScienceQA")
-test_dataset = dataset["test"]
-
 def has_image(example):
     return "image" in example and example["image"] is not None
 
 
-test_dataset = test_dataset.map(lambda example, idx: {"original_idx": idx, **example}, with_indices=True)
-test_dataset = test_dataset.filter(has_image)
-test_dataset = test_dataset.map(lambda example: process_func(example, example["original_idx"]))
+def build_eval_dataset():
+    dataset = load_dataset("derek-thomas/ScienceQA")
+    test_dataset = dataset["test"]
+    test_dataset = test_dataset.map(lambda example, idx: {"original_idx": idx, **example}, with_indices=True)
+    test_dataset = test_dataset.filter(has_image)
+    test_dataset = test_dataset.map(lambda example: process_func(example, example["original_idx"]))
+    return test_dataset
 
-def evaluate_and_save(eval_dataset, model, processor):
+
+def evaluate_and_save(eval_dataset, model, processor, output_json_path, latent_n=3, max_new_tokens=512):
     model.eval()
     correct = 0
     total = 0
     results = {} 
     total_generated_tokens = 0  
     total_generate_time = 0.0  
-    
-    output_json_path = "sqa_output/qwen_2_scienceqa.json"
+
+    output_dir = os.path.dirname(output_json_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
     
     for ex in eval_dataset:
         idx = str(ex["idx"]) 
@@ -159,7 +160,7 @@ def evaluate_and_save(eval_dataset, model, processor):
         }]
         
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        text = text + "<|latent|>" + "<|latent|>" + "<|latent|>"
+        text = text + ("<|latent|>" * latent_n)
         
         image_inputs, video_inputs = process_vision_info(messages)
         inputs = processor(
@@ -180,7 +181,7 @@ def evaluate_and_save(eval_dataset, model, processor):
                 attention_mask=inputs["attention_mask"],
                 pixel_values=inputs["pixel_values"],
                 image_grid_thw=inputs["image_grid_thw"],
-                max_new_tokens=512
+                max_new_tokens=max_new_tokens
             )
         generate_end_time = time.time()
         sample_generate_time = generate_end_time - generate_start_time
@@ -257,4 +258,35 @@ def extract_answer(text):
     logging.warning(f"No answer pattern found in text: {text[:200]}")
     return -1  
 
-evaluate_and_save(test_dataset, model, processor)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Qwen2-VL IVTLR inference on ScienceQA")
+    parser.add_argument("--checkpoint_path", type=str, required=True, help="Path to model state_dict checkpoint (.pth)")
+    parser.add_argument("--latent_n", type=int, default=3, help="Number of <|latent|> tokens appended to the prompt")
+    parser.add_argument("--patch_reuse_policy", type=str, default=DEFAULT_PATCH_REUSE_POLICY,
+                        choices=["never", "next_step_only", "always"],
+                        help="Patch selection reuse policy during generation")
+    parser.add_argument("--output_path", type=str, default="sqa_output/qwen_2_scienceqa.json", help="Path to write JSON output")
+    parser.add_argument("--max_new_tokens", type=int, default=512, help="Maximum generated tokens per sample")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    model, processor, _ = load_inference_model(
+        args.checkpoint_path,
+        patch_reuse_policy=args.patch_reuse_policy,
+    )
+    test_dataset = build_eval_dataset()
+    evaluate_and_save(
+        test_dataset,
+        model,
+        processor,
+        output_json_path=args.output_path,
+        latent_n=args.latent_n,
+        max_new_tokens=args.max_new_tokens,
+    )
+
+
+if __name__ == "__main__":
+    main()
