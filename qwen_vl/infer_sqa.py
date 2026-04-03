@@ -24,7 +24,7 @@ import pdb
 device = "cuda" if torch.cuda.is_available() else "cpu"
 DEFAULT_PATCH_REUSE_POLICY = "always"
 
-def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
+def load_inference_model(checkpoint_path, patch_reuse_policy="never", patch_sampling_strategy="attention_topk"):
     processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
     tokenizer = AutoTokenizer.from_pretrained(
         "Qwen/Qwen2-VL-7B-Instruct",
@@ -79,6 +79,7 @@ def load_inference_model(checkpoint_path, patch_reuse_policy="never"):
         visual_start_id=visual_start_id, 
         visual_end_id=visual_end_id,
         patch_reuse_policy=patch_reuse_policy,
+        patch_sampling_strategy=patch_sampling_strategy,
     )
     
     state_dict = torch.load(checkpoint_path, map_location="cpu")
@@ -266,6 +267,9 @@ def parse_args():
     parser.add_argument("--patch_reuse_policy", type=str, default=DEFAULT_PATCH_REUSE_POLICY,
                         choices=["never", "next_step_only", "always"],
                         help="Patch selection reuse policy during generation")
+    parser.add_argument("--patch_sampling_strategy", type=str, default="attention_topk",
+                        choices=["attention_topk", "random_image_only", "all_image_patches"],
+                        help="Patch sampling strategy for selecting visual tokens")
     parser.add_argument("--output_path", type=str, default="sqa_output/qwen_2_scienceqa.json", help="Path to write JSON output")
     parser.add_argument("--max_new_tokens", type=int, default=512, help="Maximum generated tokens per sample")
     return parser.parse_args()
@@ -276,6 +280,7 @@ def main():
     model, processor, _ = load_inference_model(
         args.checkpoint_path,
         patch_reuse_policy=args.patch_reuse_policy,
+        patch_sampling_strategy=args.patch_sampling_strategy,
     )
     test_dataset = build_eval_dataset()
     evaluate_and_save(
