@@ -13,6 +13,7 @@ import os
 import time
 from datetime import timedelta
 import argparse
+from tqdm import tqdm
 logging.basicConfig(
     filename='qwenvl_32_infer_time.log',
     level=logging.DEBUG,
@@ -148,7 +149,12 @@ def evaluate_and_save(eval_dataset, model, processor, output_json_path, latent_n
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
     
-    for ex in eval_dataset:
+    for ex in tqdm(
+        eval_dataset,
+        total=len(eval_dataset),
+        desc="Evaluating ScienceQA",
+        dynamic_ncols=True,
+    ):
         idx = str(ex["idx"]) 
         input_text = ex["question_raw"]
         

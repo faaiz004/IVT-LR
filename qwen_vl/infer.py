@@ -13,6 +13,7 @@ import os
 import time
 from datetime import timedelta
 import argparse
+from tqdm import tqdm
 logging.basicConfig(
     filename='qwenvl_32_infer_time.log',
     level=logging.DEBUG,
@@ -141,7 +142,12 @@ def evaluate_and_save(eval_dataset, model, processor, output_path, latent_n=3, m
         os.makedirs(output_dir, exist_ok=True)
 
     with open(output_path, "a", encoding="utf-8") as f_out:
-        for ex in eval_dataset:
+        for ex in tqdm(
+            eval_dataset,
+            total=len(eval_dataset),
+            desc="Evaluating M3CoT",
+            dynamic_ncols=True,
+        ):
             input_text = ex["question_raw"]
             messages = [{
                 "role": "user",
