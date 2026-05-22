@@ -133,6 +133,24 @@ export NCCL_P2P_LEVEL=NVL   # if needed
 PYTHONUNBUFFERED=1 nohup deepspeed --master_port 29501 qwenvl_run_sqa.py args/qwen.yaml --deepspeed --deepspeed_config ds_config.json > qwenvl.log 2>&1 &
 ```
 
+To train the Qwen2-VL-2B model with IVT-LR on M3CoT:
+
+```
+cd qwen_vl
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export NCCL_P2P_LEVEL=NVL   # if needed
+PYTHONUNBUFFERED=1 nohup deepspeed --master_port 29502 qwenvl_run_2b.py args/qwen2vl_2b.yaml --deepspeed --deepspeed_config ds_config.json > qwenvl_2b.log 2>&1 &
+```
+
+To train the Qwen2-VL-2B model with IVT-LR on ScienceQA:
+
+```
+cd qwen_vl
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export NCCL_P2P_LEVEL=NVL   # if needed
+PYTHONUNBUFFERED=1 nohup deepspeed --master_port 29502 qwenvl_run_2b_sqa.py args/qwen2vl_2b.yaml --deepspeed --deepspeed_config ds_config.json > qwenvl_2b_sqa.log 2>&1 &
+```
+
 #### Chameleon <span id="chameleon"></span>
 
 For Chameleon on M3CoT:
@@ -182,6 +200,18 @@ Qwen2-VL on ScienceQA:
 ```
 export CUDA_VISIBLE_DEVICES=0
 nohup python infer_sqa.py > infer.log 2>&1 &  
+```
+
+Qwen2-VL-2B on M3CoT:
+```
+export CUDA_VISIBLE_DEVICES=0
+nohup python infer_2b.py --checkpoint_path your_2b_pth_path > infer_2b.log 2>&1 &
+```
+
+Qwen2-VL-2B on ScienceQA:
+```
+export CUDA_VISIBLE_DEVICES=0
+nohup python infer_2b_sqa.py --checkpoint_path your_2b_pth_path > infer_2b_sqa.log 2>&1 &
 ```
 
 Chameleon on M3CoT:
