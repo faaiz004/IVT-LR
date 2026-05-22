@@ -10,7 +10,7 @@ load_model_path: None
 seed: 0
 resume: 0
 bf16: True
-batch_size_training: 2
+batch_size_training: 16
 debug: False
 gradient_accumulation_steps: 8
 num_epochs: 16
