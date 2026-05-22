@@ -33,6 +33,7 @@ class IVTLR(nn.Module):
         num_selected_patches: int = 32,
         patch_reuse_policy: str = "never",
         patch_sampling_strategy: str = "attention_topk",
+        processor_model_id: str = "Qwen/Qwen2-VL-7B-Instruct",
     ):
 
         super(IVTLR, self).__init__()
@@ -65,7 +66,7 @@ class IVTLR(nn.Module):
             self.embedding = self.base_causallm.get_input_embeddings()
         
         # self.processor = ChameleonProcessor.from_pretrained("facebook/chameleon-7b")
-        self.processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-7B-Instruct")
+        self.processor = AutoProcessor.from_pretrained(processor_model_id)
     def forward(
         self,
         input_ids: torch.LongTensor,        # shape = (B, S)
