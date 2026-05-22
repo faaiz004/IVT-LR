@@ -162,6 +162,9 @@ def main():
         visual_end_id,
         patch_reuse_policy=patch_reuse_policy,
         processor_model_id="Qwen/Qwen2-VL-2B-Instruct",
+        enable_nvt_loss=getattr(configs, "enable_nvt_loss", False),
+        nvt_loss_weight=getattr(configs, "nvt_loss_weight", 0.0),
+        nvt_loss_epsilon=getattr(configs, "nvt_loss_epsilon", 1e-8),
     )
 
     print(f"Running Deepspeed on rank = {rank}, world size = {world_size}")

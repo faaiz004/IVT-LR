@@ -34,6 +34,9 @@ class IVTLR(nn.Module):
         patch_reuse_policy: str = "never",
         patch_sampling_strategy: str = "attention_topk",
         processor_model_id: str = "Qwen/Qwen2-VL-7B-Instruct",
+        enable_nvt_loss: bool = False,
+        nvt_loss_weight: float = 0.0,
+        nvt_loss_epsilon: float = 1e-8,
     ):
 
         super(IVTLR, self).__init__()
@@ -58,6 +61,9 @@ class IVTLR(nn.Module):
                 f"Expected one of {valid_sampling_strategies}."
             )
         self.patch_sampling_strategy = patch_sampling_strategy
+        self.enable_nvt_loss = enable_nvt_loss and nvt_loss_weight > 0
+        self.nvt_loss_weight = nvt_loss_weight
+        self.nvt_loss_epsilon = nvt_loss_epsilon
 
         # tested with GPT2 and Llama3
         if isinstance(self.base_causallm, GPT2LMHeadModel):
@@ -67,6 +73,38 @@ class IVTLR(nn.Module):
         
         # self.processor = ChameleonProcessor.from_pretrained("facebook/chameleon-7b")
         self.processor = AutoProcessor.from_pretrained(processor_model_id)
+
+    def _compute_nvt_loss(self, attentions, query_index, inserted_spans):
+        if not inserted_spans:
+            return None
+
+        per_batch_losses = []
+        for batch_index, span in enumerate(inserted_spans):
+            if span is None:
+                continue
+
+            span_start, span_end = span
+            if span_end <= span_start:
+                continue
+
+            layer_masses = []
+            for layer_attn in attentions:
+                if query_index >= layer_attn.size(-2) or span_end > layer_attn.size(-1):
+                    continue
+                token_to_span = layer_attn[batch_index, :, query_index, span_start:span_end].sum(dim=-1)
+                layer_masses.append(token_to_span.mean())
+
+            if not layer_masses:
+                continue
+
+            mt = torch.stack(layer_masses).mean()
+            per_batch_losses.append(-torch.log(mt + self.nvt_loss_epsilon))
+
+        if not per_batch_losses:
+            return None
+
+        return torch.stack(per_batch_losses).mean()
+
     def forward(
         self,
         input_ids: torch.LongTensor,        # shape = (B, S)
@@ -136,6 +174,8 @@ class IVTLR(nn.Module):
         
         kv_cache = None
         all_logits = []
+        nvt_losses = []
+        prev_inserted_spans = None
 
         if max_n_latents > 0:
             for pass_idx in range(max_n_latents):
@@ -170,6 +210,11 @@ class IVTLR(nn.Module):
                 kv_cache      = outputs.past_key_values
 
                 all_logits.append(logits_this)
+
+                if self.enable_nvt_loss and prev_inserted_spans is not None:
+                    nvt_loss = self._compute_nvt_loss(attentions, end - 1, prev_inserted_spans)
+                    if nvt_loss is not None:
+                        nvt_losses.append(nvt_loss)
 
                 #   Top-K
                 avg_attn = torch.cat(attentions, dim=1).mean(dim=1)  # (B, seq_len)
@@ -317,6 +362,7 @@ class IVTLR(nn.Module):
                 new_image_mask = []
                 new_trace_mask = []
                 new_recently_selected_mask = []
+                current_inserted_spans = []
                 batch_max_len = 0
 
                 for b in range(B):
@@ -327,6 +373,7 @@ class IVTLR(nn.Module):
                     v_embed_b = select_image_embeds[b]       # (K, D)
                     merged_b = torch.cat([prefix_b, v_embed_b, suffix_b], dim=0)  # (old_len+K, D)
                     new_inputs_embeds.append(merged_b)
+                    current_inserted_spans.append((end_b, end_b + K_b))
 
                     # attention_mask
                     att_pref = attention_mask[b, :end_b]      # (end_b,)
@@ -404,6 +451,7 @@ class IVTLR(nn.Module):
                 trace_mask     = torch.cat(padded_trace, dim=0)
                 if self.patch_reuse_policy == "next_step_only":
                     recently_selected_mask = torch.cat(padded_recent, dim=0)
+                prev_inserted_spans = current_inserted_spans
                 for b in range(B):
                     K_b = selected_counts[b]
                     for i, pos in enumerate(latent_lists[b]):
@@ -426,7 +474,7 @@ class IVTLR(nn.Module):
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
                     output_hidden_states=True,
-                    output_attentions=False,
+                    output_attentions=self.enable_nvt_loss,
                 )
             else:
                 outputs = self.base_causallm(
@@ -436,9 +484,13 @@ class IVTLR(nn.Module):
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
                     output_hidden_states=True,
-                    output_attentions=False,
+                    output_attentions=self.enable_nvt_loss,
                 )
             all_logits.append(outputs.logits)
+            if self.enable_nvt_loss and prev_inserted_spans is not None and outputs.attentions is not None:
+                nvt_loss = self._compute_nvt_loss(outputs.attentions, end - 1, prev_inserted_spans)
+                if nvt_loss is not None:
+                    nvt_losses.append(nvt_loss)
 
         else:
             outputs = self.base_causallm(
@@ -459,11 +511,14 @@ class IVTLR(nn.Module):
         new_labels = torch.full((B, final_S), -100, device=input_ids.device, dtype=labels.dtype)
         for b in range(B):
             num_labels = labels.size(1)
-            new_labels[:, -num_labels:] = labels
+            new_labels[b, -num_labels:] = labels[b]
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = new_labels[..., 1:].contiguous()
         loss_fct = CrossEntropyLoss(ignore_index=-100)
         loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        if self.enable_nvt_loss and nvt_losses:
+            nvt_loss = torch.stack(nvt_losses).mean()
+            loss = loss + self.nvt_loss_weight * nvt_loss
 
         return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits)
 
