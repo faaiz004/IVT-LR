@@ -14,7 +14,7 @@ logging.basicConfig(
 import pdb
 from transformers.cache_utils import DynamicCache
 
-Outputs = namedtuple("Outputs", ["loss", "inputs_embeds", "logits"])
+Outputs = namedtuple("Outputs", ["loss", "ce_loss", "nvt_loss", "inputs_embeds", "logits"])
 MAX_N_LATENT = 4 
 
 
@@ -515,12 +515,13 @@ class IVTLR(nn.Module):
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = new_labels[..., 1:].contiguous()
         loss_fct = CrossEntropyLoss(ignore_index=-100)
-        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
-        if self.enable_nvt_loss and nvt_losses:
-            nvt_loss = torch.stack(nvt_losses).mean()
+        ce_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        nvt_loss = torch.stack(nvt_losses).mean() if (self.enable_nvt_loss and nvt_losses) else None
+        loss = ce_loss
+        if nvt_loss is not None:
             loss = loss + self.nvt_loss_weight * nvt_loss
 
-        return Outputs(loss=loss, inputs_embeds=inputs_embeds, logits=logits)
+        return Outputs(loss=loss, ce_loss=ce_loss, nvt_loss=nvt_loss, inputs_embeds=inputs_embeds, logits=logits)
 
 
     def train(self, mode=True):

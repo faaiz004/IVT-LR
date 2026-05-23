@@ -368,6 +368,14 @@ def main():
             outputs = model_engine(**batch)
             loss = outputs.loss
             print(f"loss: {loss}")
+            if rank == 0 and (step + 1) % 300 == 0:
+                ce_loss = outputs.ce_loss.detach().float()
+                nvt_loss = outputs.nvt_loss.detach().float() if outputs.nvt_loss is not None else torch.tensor(0.0)
+                total_loss = loss.detach().float()
+                print(
+                    f"[step {step + 1}] ce_loss={float(ce_loss):.4f} "
+                    f"nvt_loss={float(nvt_loss):.4f} total_loss={float(total_loss):.4f}"
+                )
             model_engine.backward(loss)
             model_engine.step()
             
