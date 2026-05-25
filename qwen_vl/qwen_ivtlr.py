@@ -14,7 +14,7 @@ logging.basicConfig(
 import pdb
 from transformers.cache_utils import DynamicCache
 
-Outputs = namedtuple("Outputs", ["loss", "ce_loss", "nvt_loss", "inputs_embeds", "logits"])
+Outputs = namedtuple("Outputs", ["loss", "ce_loss", "nvt_loss", "inputs_embeds", "logits", "latent_attn_trace"])
 MAX_N_LATENT = 4 
 
 
@@ -113,6 +113,9 @@ class IVTLR(nn.Module):
         position_ids: torch.LongTensor,      # shape = (B, S)
         pixel_values: torch.FloatTensor,     # shape = (B, 3, H, W)
         image_grid_thw: torch.Tensor = None,
+        return_latent_attn: bool = False,
+        latent_attn_threshold: float = None,
+        latent_attn_threshold_multiplier: float = 5.0,
         **kwargs
     ):
 
@@ -466,6 +469,7 @@ class IVTLR(nn.Module):
                         raise ValueError("all_image_patches currently supports batch_size=1 only.")
                     end = end + 1 + selected_counts[0]
 
+            output_attentions = self.enable_nvt_loss or return_latent_attn
             if kv_cache:
                 outputs = self.base_causallm(
                     inputs_embeds=inputs_embeds[:, :end, :],
@@ -474,7 +478,7 @@ class IVTLR(nn.Module):
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
                     output_hidden_states=True,
-                    output_attentions=self.enable_nvt_loss,
+                    output_attentions=output_attentions,
                 )
             else:
                 outputs = self.base_causallm(
@@ -484,7 +488,7 @@ class IVTLR(nn.Module):
                     pixel_values=pixel_values,
                     image_grid_thw=image_grid_thw,
                     output_hidden_states=True,
-                    output_attentions=self.enable_nvt_loss,
+                    output_attentions=output_attentions,
                 )
             all_logits.append(outputs.logits)
             if self.enable_nvt_loss and prev_inserted_spans is not None and outputs.attentions is not None:
@@ -504,6 +508,41 @@ class IVTLR(nn.Module):
             )
             all_logits.append(outputs.logits)
 
+        latent_attn_trace = None
+        if return_latent_attn and outputs.attentions is not None and max_n_latents > 0:
+            final_attn = outputs.attentions[-1].mean(dim=1)
+            seq_len = final_attn.size(-1)
+            threshold = latent_attn_threshold
+            if threshold is None:
+                threshold = latent_attn_threshold_multiplier / max(seq_len, 1)
+            latent_attn_trace = []
+            for b in range(B):
+                image_mask_b = image_mask[b, :seq_len]
+                original_mask_b = original_mask[b, :seq_len]
+                text_mask_b = original_mask_b & (~image_mask_b)
+                trace_mask_b = trace_mask[b, :seq_len]
+
+                per_latent = []
+                for t_idx in latent_lists[b]:
+                    if t_idx >= seq_len:
+                        continue
+                    row = final_attn[b, t_idx]
+                    image_mass = row[image_mask_b].sum().item() if image_mask_b.any() else 0.0
+                    text_mass = row[text_mask_b].sum().item() if text_mask_b.any() else 0.0
+                    trace_mass = row[trace_mask_b].sum().item() if trace_mask_b.any() else 0.0
+                    image_above = (image_mask_b & (row > threshold)).nonzero(as_tuple=True)[0].tolist()
+                    trace_above = (trace_mask_b & (row > threshold)).nonzero(as_tuple=True)[0].tolist()
+                    per_latent.append({
+                        "latent_pos": int(t_idx),
+                        "image_mass": float(image_mass),
+                        "text_mass": float(text_mass),
+                        "trace_mass": float(trace_mass),
+                        "threshold": float(threshold),
+                        "image_above_threshold": image_above,
+                        "trace_above_threshold": trace_above,
+                    })
+                latent_attn_trace.append(per_latent)
+
         logits = torch.cat(all_logits, dim=-2)  # (B, total_len, V)
         B, final_S, V = logits.size()
 
@@ -521,7 +560,14 @@ class IVTLR(nn.Module):
         if nvt_loss is not None:
             loss = loss + self.nvt_loss_weight * nvt_loss
 
-        return Outputs(loss=loss, ce_loss=ce_loss, nvt_loss=nvt_loss, inputs_embeds=inputs_embeds, logits=logits)
+        return Outputs(
+            loss=loss,
+            ce_loss=ce_loss,
+            nvt_loss=nvt_loss,
+            inputs_embeds=inputs_embeds,
+            logits=logits,
+            latent_attn_trace=latent_attn_trace,
+        )
 
 
     def train(self, mode=True):

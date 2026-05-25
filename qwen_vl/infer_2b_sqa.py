@@ -138,13 +138,45 @@ def build_eval_dataset():
     return test_dataset
 
 
-def evaluate_and_save(eval_dataset, model, processor, output_json_path, latent_n=3, max_new_tokens=512):
+def compute_latent_attention_trace(model, inputs, attn_threshold=None, attn_threshold_multiplier=5.0):
+    seq_len = inputs["input_ids"].shape[1]
+    position_ids = torch.arange(seq_len, device=inputs["input_ids"].device).unsqueeze(0)
+    labels = inputs["input_ids"].clone()
+
+    with torch.no_grad():
+        outputs = model(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            labels=labels,
+            position_ids=position_ids,
+            pixel_values=inputs["pixel_values"],
+            image_grid_thw=inputs["image_grid_thw"],
+            return_latent_attn=True,
+            latent_attn_threshold=attn_threshold,
+            latent_attn_threshold_multiplier=attn_threshold_multiplier,
+        )
+
+    return outputs.latent_attn_trace
+
+
+def evaluate_and_save(
+    eval_dataset,
+    model,
+    processor,
+    output_json_path,
+    latent_n=3,
+    max_new_tokens=512,
+    attn_trace_path=None,
+    attn_threshold=None,
+    attn_threshold_multiplier=5.0,
+):
     model.eval()
     correct = 0
     total = 0
     results = {} 
     total_generated_tokens = 0  
     total_generate_time = 0.0  
+    attn_traces = []
 
     output_dir = os.path.dirname(output_json_path)
     if output_dir:
@@ -178,6 +210,18 @@ def evaluate_and_save(eval_dataset, model, processor, output_json_path, latent_n
             padding=True,
             return_tensors="pt"
         ).to(device)
+
+        if attn_trace_path:
+            trace = compute_latent_attention_trace(
+                model,
+                inputs,
+                attn_threshold=attn_threshold,
+                attn_threshold_multiplier=attn_threshold_multiplier,
+            )
+            attn_traces.append({
+                "idx": idx,
+                "latent_attn": trace[0] if trace else [],
+            })
         
         prompt_length = inputs["input_ids"].shape[1]
         
@@ -215,6 +259,13 @@ def evaluate_and_save(eval_dataset, model, processor, output_json_path, latent_n
     output_data = {"results": results}
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(output_data, f, ensure_ascii=False, indent=2)
+
+    if attn_trace_path:
+        attn_dir = os.path.dirname(attn_trace_path)
+        if attn_dir:
+            os.makedirs(attn_dir, exist_ok=True)
+        with open(attn_trace_path, "w", encoding="utf-8") as f:
+            json.dump(attn_traces, f, ensure_ascii=False, indent=2)
     
     accuracy = correct / total if total > 0 else 0
     avg_generated_tokens = total_generated_tokens / total if total > 0 else 0
@@ -279,6 +330,9 @@ def parse_args():
                         help="Patch sampling strategy for selecting visual tokens")
     parser.add_argument("--output_path", type=str, default="sqa_output/qwen2vl_2b_scienceqa.json", help="Path to write JSON output")
     parser.add_argument("--max_new_tokens", type=int, default=512, help="Maximum generated tokens per sample")
+    parser.add_argument("--attn_trace_path", type=str, default=None, help="Path to write JSON attention traces")
+    parser.add_argument("--attn_threshold", type=float, default=None, help="Absolute attention threshold for patch logging")
+    parser.add_argument("--attn_threshold_multiplier", type=float, default=5.0, help="Threshold multiplier for 1/seq_len baseline")
     return parser.parse_args()
 
 
@@ -297,6 +351,9 @@ def main():
         output_json_path=args.output_path,
         latent_n=args.latent_n,
         max_new_tokens=args.max_new_tokens,
+        attn_trace_path=args.attn_trace_path,
+        attn_threshold=args.attn_threshold,
+        attn_threshold_multiplier=args.attn_threshold_multiplier,
     )
 
 
