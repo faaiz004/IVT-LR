@@ -18,4 +18,4 @@ lr: !!float "4e-5"
 patch_reuse_policy: never
 enable_nvt_loss: True
 nvt_loss_weight: 0.1
-nvt_loss_epsilon: 1e-8
+nvt_loss_epsilon: !!float "1e-8"

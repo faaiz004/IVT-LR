@@ -63,7 +63,7 @@ class IVTLR(nn.Module):
         self.patch_sampling_strategy = patch_sampling_strategy
         self.enable_nvt_loss = enable_nvt_loss and nvt_loss_weight > 0
         self.nvt_loss_weight = nvt_loss_weight
-        self.nvt_loss_epsilon = nvt_loss_epsilon
+        self.nvt_loss_epsilon = float(nvt_loss_epsilon) if nvt_loss_epsilon is not None else 1e-8
 
         # tested with GPT2 and Llama3
         if isinstance(self.base_causallm, GPT2LMHeadModel):
