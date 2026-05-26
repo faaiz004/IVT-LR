@@ -14,7 +14,10 @@ logging.basicConfig(
 import pdb
 from transformers.cache_utils import DynamicCache
 
-Outputs = namedtuple("Outputs", ["loss", "ce_loss", "nvt_loss", "inputs_embeds", "logits", "latent_attn_trace"])
+Outputs = namedtuple(
+    "Outputs",
+    ["loss", "ce_loss", "nvt_loss", "inputs_embeds", "logits", "latent_attn_trace", "token_norms"],
+)
 MAX_N_LATENT = 4 
 
 
@@ -105,6 +108,19 @@ class IVTLR(nn.Module):
 
         return torch.stack(per_batch_losses).mean()
 
+    @staticmethod
+    def _summarize_norms(norms_tensor: torch.Tensor):
+        if norms_tensor.numel() == 0:
+            return {"count": 0, "mean": None, "std": None, "min": None, "max": None}
+        norms_tensor = norms_tensor.float()
+        return {
+            "count": int(norms_tensor.numel()),
+            "mean": float(norms_tensor.mean().item()),
+            "std": float(norms_tensor.std(unbiased=False).item()),
+            "min": float(norms_tensor.min().item()),
+            "max": float(norms_tensor.max().item()),
+        }
+
     def forward(
         self,
         input_ids: torch.LongTensor,        # shape = (B, S)
@@ -114,6 +130,7 @@ class IVTLR(nn.Module):
         pixel_values: torch.FloatTensor,     # shape = (B, 3, H, W)
         image_grid_thw: torch.Tensor = None,
         return_latent_attn: bool = False,
+        return_token_norms: bool = False,
         latent_attn_threshold: float = None,
         latent_attn_threshold_multiplier: float = 5.0,
         **kwargs
@@ -156,6 +173,11 @@ class IVTLR(nn.Module):
         image_mask[:, :S] = image_mask_init
         trace_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
         recently_selected_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
+        patch_insert_mask = None
+        reasoning_insert_mask = None
+        if return_token_norms:
+            patch_insert_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
+            reasoning_insert_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
 
 
         for b in range(B):
@@ -225,6 +247,8 @@ class IVTLR(nn.Module):
                 select_image_embeds = []
                 current_selected_mask = torch.zeros_like(image_mask)
                 selected_counts = []
+                selected_patch_origins = [] if return_token_norms else None
+                selected_reasoning_origins = [] if return_token_norms else None
 
                 for b in range(B):
                     last_attn = avg_attn[b, end - 1]  # shape=(seq_len,)
@@ -338,6 +362,9 @@ class IVTLR(nn.Module):
                     logging.debug(f"selected image idx: {image_abs_idxs}")
                     logging.debug(f"selected trace idx: {trace_abs_idxs}")
                     logging.debug(f"abs idx: {abs_idxs}")
+                    if return_token_norms:
+                        selected_patch_origins.append(image_mask[b, abs_idxs].clone())
+                        selected_reasoning_origins.append(trace_mask[b, abs_idxs].clone())
                     if self.patch_reuse_policy == "never":
                         image_mask[b, abs_idxs] = False
                         trace_mask[b, abs_idxs] = False
@@ -365,6 +392,8 @@ class IVTLR(nn.Module):
                 new_image_mask = []
                 new_trace_mask = []
                 new_recently_selected_mask = []
+                new_patch_insert_mask = [] if return_token_norms else None
+                new_reasoning_insert_mask = [] if return_token_norms else None
                 current_inserted_spans = []
                 batch_max_len = 0
 
@@ -418,6 +447,19 @@ class IVTLR(nn.Module):
                         merged_recent = torch.cat([recent_pref, recent_v, recent_suf], dim=0)
                         new_recently_selected_mask.append(merged_recent)
 
+                    if return_token_norms:
+                        patch_pref = patch_insert_mask[b, :end_b]
+                        patch_suf = patch_insert_mask[b, end_b:]
+                        patch_v = selected_patch_origins[b].to(torch.bool)
+                        merged_patch = torch.cat([patch_pref, patch_v, patch_suf], dim=0)
+                        new_patch_insert_mask.append(merged_patch)
+
+                        reasoning_pref = reasoning_insert_mask[b, :end_b]
+                        reasoning_suf = reasoning_insert_mask[b, end_b:]
+                        reasoning_v = selected_reasoning_origins[b].to(torch.bool)
+                        merged_reasoning = torch.cat([reasoning_pref, reasoning_v, reasoning_suf], dim=0)
+                        new_reasoning_insert_mask.append(merged_reasoning)
+
                     batch_max_len = max(batch_max_len, merged_b.size(0))
 
                 padded_embeds = []
@@ -427,6 +469,8 @@ class IVTLR(nn.Module):
                 padded_img   = []
                 padded_trace = []
                 padded_recent = []
+                padded_patch = []
+                padded_reasoning = []
 
                 for b in range(B):
                     emb_b = new_inputs_embeds[b]
@@ -445,6 +489,11 @@ class IVTLR(nn.Module):
                     if self.patch_reuse_policy == "next_step_only":
                         recent_b = new_recently_selected_mask[b]
                         padded_recent.append(recent_b.unsqueeze(0))
+                    if return_token_norms:
+                        patch_b = new_patch_insert_mask[b]
+                        reasoning_b = new_reasoning_insert_mask[b]
+                        padded_patch.append(patch_b.unsqueeze(0))
+                        padded_reasoning.append(reasoning_b.unsqueeze(0))
 
                 inputs_embeds = torch.cat(padded_embeds, dim=0)    
                 attention_mask = torch.cat(padded_att, dim=0)      
@@ -454,6 +503,9 @@ class IVTLR(nn.Module):
                 trace_mask     = torch.cat(padded_trace, dim=0)
                 if self.patch_reuse_policy == "next_step_only":
                     recently_selected_mask = torch.cat(padded_recent, dim=0)
+                if return_token_norms:
+                    patch_insert_mask = torch.cat(padded_patch, dim=0)
+                    reasoning_insert_mask = torch.cat(padded_reasoning, dim=0)
                 prev_inserted_spans = current_inserted_spans
                 for b in range(B):
                     K_b = selected_counts[b]
@@ -546,6 +598,28 @@ class IVTLR(nn.Module):
         logits = torch.cat(all_logits, dim=-2)  # (B, total_len, V)
         B, final_S, V = logits.size()
 
+        token_norms = None
+        if return_token_norms:
+            token_norms = []
+            seq_len_for_norms = min(end, inputs_embeds.size(1))
+            for b in range(B):
+                patch_mask_b = patch_insert_mask[b, :seq_len_for_norms]
+                reasoning_mask_b = reasoning_insert_mask[b, :seq_len_for_norms]
+                patch_embeds = inputs_embeds[b, :seq_len_for_norms, :][patch_mask_b]
+                reasoning_embeds = inputs_embeds[b, :seq_len_for_norms, :][reasoning_mask_b]
+                patch_norms = torch.norm(patch_embeds, dim=-1) if patch_embeds.numel() > 0 else torch.tensor([])
+                reasoning_norms = (
+                    torch.norm(reasoning_embeds, dim=-1) if reasoning_embeds.numel() > 0 else torch.tensor([])
+                )
+                token_norms.append({
+                    "patch_norms": patch_norms.float().tolist(),
+                    "reasoning_norms": reasoning_norms.float().tolist(),
+                    "aggregate_stats": {
+                        "patch": self._summarize_norms(patch_norms),
+                        "reasoning": self._summarize_norms(reasoning_norms),
+                    },
+                })
+
 
         new_labels = torch.full((B, final_S), -100, device=input_ids.device, dtype=labels.dtype)
         for b in range(B):
@@ -567,6 +641,7 @@ class IVTLR(nn.Module):
             inputs_embeds=inputs_embeds,
             logits=logits,
             latent_attn_trace=latent_attn_trace,
+            token_norms=token_norms,
         )
 
 

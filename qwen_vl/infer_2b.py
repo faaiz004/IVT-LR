@@ -6,6 +6,7 @@ import deepspeed
 from peft import LoraConfig,get_peft_model
 from qwen_vl_utils import process_vision_info
 from datasets import load_dataset
+from utils import set_seed
 import re
 import logging
 import json
@@ -125,10 +126,17 @@ def process_func(example):
         "topic": example["topic"]
     }
 
-def build_eval_dataset():
+def build_eval_dataset(data_percent=100.0, sample_seed=42):
     dataset = load_dataset("LightChen2333/M3CoT")
     val_dataset = dataset["test"]
-    return val_dataset.filter(lambda e: e["image"] is not None).map(process_func)
+    val_dataset = val_dataset.filter(lambda e: e["image"] is not None).map(process_func)
+    if data_percent >= 100:
+        return val_dataset
+    if data_percent <= 0:
+        raise ValueError("data_percent must be in (0, 100].")
+    sample_size = max(1, int(len(val_dataset) * (data_percent / 100.0)))
+    val_dataset = val_dataset.shuffle(seed=sample_seed).select(range(sample_size))
+    return val_dataset
 
 
 def compute_latent_attention_trace(model, inputs, attn_threshold=None, attn_threshold_multiplier=5.0):
@@ -152,6 +160,27 @@ def compute_latent_attention_trace(model, inputs, attn_threshold=None, attn_thre
     return outputs.latent_attn_trace
 
 
+def compute_token_norms(model, inputs):
+    seq_len = inputs["input_ids"].shape[1]
+    position_ids = torch.arange(seq_len, device=inputs["input_ids"].device).unsqueeze(0)
+    labels = inputs["input_ids"].clone()
+
+    with torch.no_grad():
+        outputs = model(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            labels=labels,
+            position_ids=position_ids,
+            pixel_values=inputs["pixel_values"],
+            image_grid_thw=inputs["image_grid_thw"],
+            return_token_norms=True,
+        )
+
+    if not outputs.token_norms:
+        return None
+    return outputs.token_norms[0]
+
+
 def evaluate_and_save(
     eval_dataset,
     model,
@@ -162,6 +191,8 @@ def evaluate_and_save(
     attn_trace_path=None,
     attn_threshold=None,
     attn_threshold_multiplier=5.0,
+    analyze_token_norms=False,
+    token_norms_path=None,
 ):
     model.eval()
     correct = 0
@@ -173,112 +204,134 @@ def evaluate_and_save(
     output_dir = os.path.dirname(output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
+    norms_file = None
+    if analyze_token_norms and token_norms_path:
+        token_norms_dir = os.path.dirname(token_norms_path)
+        if token_norms_dir:
+            os.makedirs(token_norms_dir, exist_ok=True)
+        norms_file = open(token_norms_path, "a", encoding="utf-8")
 
-    with open(output_path, "a", encoding="utf-8") as f_out:
-        for ex in tqdm(
-            eval_dataset,
-            total=len(eval_dataset),
-            desc="Evaluating M3CoT",
-            dynamic_ncols=True,
-        ):
-            input_text = ex["question_raw"]
-            messages = [{
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": ex["image_raw"], "resized_height": 280, "resized_width": 280},
-                    {"type": "text", "text": input_text}
-                ]
-            }]
-            text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            text = text + ("<|latent|>" * latent_n)
-            image_inputs, video_inputs = process_vision_info(messages)
-            inputs = processor(
-                text=[text],
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt"
-            ).to(device)
-            if attn_trace_path:
-                trace = compute_latent_attention_trace(
-                    model,
-                    inputs,
-                    attn_threshold=attn_threshold,
-                    attn_threshold_multiplier=attn_threshold_multiplier,
+    try:
+        with open(output_path, "a", encoding="utf-8") as f_out:
+            for ex in tqdm(
+                eval_dataset,
+                total=len(eval_dataset),
+                desc="Evaluating M3CoT",
+                dynamic_ncols=True,
+            ):
+                input_text = ex["question_raw"]
+                messages = [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": ex["image_raw"], "resized_height": 280, "resized_width": 280},
+                        {"type": "text", "text": input_text}
+                    ]
+                }]
+                text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                text = text + ("<|latent|>" * latent_n)
+                image_inputs, video_inputs = process_vision_info(messages)
+                inputs = processor(
+                    text=[text],
+                    images=image_inputs,
+                    videos=video_inputs,
+                    padding=True,
+                    return_tensors="pt"
+                ).to(device)
+                if attn_trace_path:
+                    trace = compute_latent_attention_trace(
+                        model,
+                        inputs,
+                        attn_threshold=attn_threshold,
+                        attn_threshold_multiplier=attn_threshold_multiplier,
+                    )
+                    attn_traces.append({
+                        "id": ex["id"],
+                        "latent_attn": trace[0] if trace else [],
+                    })
+                if analyze_token_norms and norms_file is not None:
+                    norms = compute_token_norms(model, inputs)
+                    if norms is not None:
+                        norms_result = {
+                            "id": ex["id"],
+                            "patch_norms": norms.get("patch_norms", []),
+                            "reasoning_norms": norms.get("reasoning_norms", []),
+                            "aggregate_stats": norms.get("aggregate_stats", {}),
+                        }
+                        norms_file.write(json.dumps(norms_result, ensure_ascii=False) + "\n")
+                        norms_file.flush()
+
+                input_ids = inputs["input_ids"]
+                prompt_length = input_ids.shape[1]
+                
+                generate_start_time = time.time()
+                with torch.no_grad():
+                    outputs = model.generate(
+                        input_ids=torch.tensor(inputs["input_ids"]), 
+                        attention_mask=torch.tensor(inputs["attention_mask"]),
+                        pixel_values=torch.tensor(inputs["pixel_values"]),
+                        image_grid_thw=torch.tensor(inputs["image_grid_thw"]),
+                        max_new_tokens=max_new_tokens
+                    )
+                generate_end_time = time.time()
+                sample_generate_time = generate_end_time - generate_start_time
+                total_generate_time += sample_generate_time
+                            
+                generated_tokens = outputs[0, prompt_length:]
+                new_generated_text = processor.decode(generated_tokens, skip_special_tokens=True)
+                output_text = processor.decode(outputs[0], skip_special_tokens=True)
+                logging.debug(f"[OUTPUT] {output_text}")
+                
+                num_generated_tokens = len(generated_tokens)
+                total_generated_tokens += num_generated_tokens
+
+                cleaned_text = re.sub(
+                    r'(?<=answer:)\s*(\n+\s*)?assistant\b',
+                    '',
+                    output_text,
+                    flags=re.IGNORECASE
                 )
-                attn_traces.append({
+                matches = re.finditer(
+                    r'(?:the\s+answer\s+is|Answer:)\s*[\n\s]*([A-Z])',
+                    cleaned_text,
+                    flags=re.IGNORECASE | re.DOTALL
+                )
+                candidates = {match.group(1).upper() for match in matches}
+                gt_answer = ex["gt_answer"].strip().upper()
+
+                if gt_answer in candidates:
+                    correct += 1
+                    logging.debug(f"correct: True")
+                total += 1
+                logging.debug(f"[TOTAL] {total}")
+
+                # pdb.set_trace()
+                message_question = ex["question_raw"]
+                message_question = message_question.replace("<image>", "", 1).replace("Answer:", "", 1).strip()
+                message_question = message_question.split("Answer:")[0].strip()
+
+                result = {
                     "id": ex["id"],
-                    "latent_attn": trace[0] if trace else [],
-                })
-            input_ids = inputs["input_ids"]
-            prompt_length = input_ids.shape[1]
-            
-            generate_start_time = time.time()
-            with torch.no_grad():
-                outputs = model.generate(
-                    input_ids=torch.tensor(inputs["input_ids"]), 
-                    attention_mask=torch.tensor(inputs["attention_mask"]),
-                    pixel_values=torch.tensor(inputs["pixel_values"]),
-                    image_grid_thw=torch.tensor(inputs["image_grid_thw"]),
-                    max_new_tokens=max_new_tokens
-                )
-            generate_end_time = time.time()
-            sample_generate_time = generate_end_time - generate_start_time
-            total_generate_time += sample_generate_time
-                        
-            generated_tokens = outputs[0, prompt_length:]
-            new_generated_text = processor.decode(generated_tokens, skip_special_tokens=True)
-            output_text = processor.decode(outputs[0], skip_special_tokens=True)
-            logging.debug(f"[OUTPUT] {output_text}")
-            
-            num_generated_tokens = len(generated_tokens)
-            total_generated_tokens += num_generated_tokens
-
-            cleaned_text = re.sub(
-                r'(?<=answer:)\s*(\n+\s*)?assistant\b',
-                '',
-                output_text,
-                flags=re.IGNORECASE
-            )
-            matches = re.finditer(
-                r'(?:the\s+answer\s+is|Answer:)\s*[\n\s]*([A-Z])',
-                cleaned_text,
-                flags=re.IGNORECASE | re.DOTALL
-            )
-            candidates = {match.group(1).upper() for match in matches}
-            gt_answer = ex["gt_answer"].strip().upper()
-
-            if gt_answer in candidates:
-                correct += 1
-                logging.debug(f"correct: True")
-            total += 1
-            logging.debug(f"[TOTAL] {total}")
-
-            # pdb.set_trace()
-            message_question = ex["question_raw"]
-            message_question = message_question.replace("<image>", "", 1).replace("Answer:", "", 1).strip()
-            message_question = message_question.split("Answer:")[0].strip()
-
-            result = {
-                "id": ex["id"],
-                "choices": ex["choices"],
-                "answer": ex["gt_answer"],
-                "domain": ex["domain"],
-                "topic": ex["topic"],
-                "messages": [
-                    message_question,
-                    new_generated_text
-                ]
-            }
-            f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
-            f_out.flush()
-            
-        avg_generated_tokens = total_generated_tokens / total if total > 0 else 0
-        avg_time_per_sample = total_generate_time / total if total > 0 else 0
-    
-        logging.info(f"[FINAL] Avg generated tokens per sample: {avg_generated_tokens:.1f}")
-        logging.info(f"[FINAL] Total generate time: {total_generate_time:.2f}s ({timedelta(seconds=int(total_generate_time))})")
-        logging.info(f"[FINAL] Avg generate time per sample: {avg_time_per_sample:.3f}s")
+                    "choices": ex["choices"],
+                    "answer": ex["gt_answer"],
+                    "domain": ex["domain"],
+                    "topic": ex["topic"],
+                    "messages": [
+                        message_question,
+                        new_generated_text
+                    ]
+                }
+                f_out.write(json.dumps(result, ensure_ascii=False) + "\n")
+                f_out.flush()
+                
+            avg_generated_tokens = total_generated_tokens / total if total > 0 else 0
+            avg_time_per_sample = total_generate_time / total if total > 0 else 0
+        
+            logging.info(f"[FINAL] Avg generated tokens per sample: {avg_generated_tokens:.1f}")
+            logging.info(f"[FINAL] Total generate time: {total_generate_time:.2f}s ({timedelta(seconds=int(total_generate_time))})")
+            logging.info(f"[FINAL] Avg generate time per sample: {avg_time_per_sample:.3f}s")
+    finally:
+        if norms_file is not None:
+            norms_file.close()
 
     if attn_trace_path:
         attn_dir = os.path.dirname(attn_trace_path)
@@ -303,6 +356,19 @@ def parse_args():
     parser.add_argument("--attn_trace_path", type=str, default=None, help="Path to write JSON attention traces")
     parser.add_argument("--attn_threshold", type=float, default=None, help="Absolute attention threshold for patch logging")
     parser.add_argument("--attn_threshold_multiplier", type=float, default=5.0, help="Threshold multiplier for 1/seq_len baseline")
+    parser.add_argument("--data_percent", type=float, default=100.0, help="Percentage of dataset to use for inference")
+    parser.add_argument("--sample_seed", type=int, default=42, help="Random seed for dataset sampling")
+    parser.add_argument(
+        "--analyze_patch_reasoning_norms",
+        action="store_true",
+        help="Compute patch vs reasoning token norms and store per-example JSON",
+    )
+    parser.add_argument(
+        "--token_norms_path",
+        type=str,
+        default="output/qwen2vl_2b_token_norms.jsonl",
+        help="Path to write token norm JSONL",
+    )
     return parser.parse_args()
 
 
@@ -313,7 +379,10 @@ def main():
         patch_reuse_policy=args.patch_reuse_policy,
         patch_sampling_strategy=args.patch_sampling_strategy,
     )
-    val_dataset = build_eval_dataset()
+    if not (0 < args.data_percent <= 100):
+        raise ValueError("--data_percent must be in (0, 100].")
+    set_seed(args.sample_seed)
+    val_dataset = build_eval_dataset(data_percent=args.data_percent, sample_seed=args.sample_seed)
     evaluate_and_save(
         val_dataset,
         model,
@@ -324,6 +393,8 @@ def main():
         attn_trace_path=args.attn_trace_path,
         attn_threshold=args.attn_threshold,
         attn_threshold_multiplier=args.attn_threshold_multiplier,
+        analyze_token_norms=args.analyze_patch_reasoning_norms,
+        token_norms_path=args.token_norms_path,
     )
 
 
