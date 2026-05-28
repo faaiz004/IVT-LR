@@ -176,9 +176,9 @@ class IVTLR(nn.Module):
         attention_mask: torch.LongTensor,    # shape = (B, S)
         labels: torch.LongTensor,            # shape = (B, S)
         position_ids: torch.LongTensor,      # shape = (B, S)
-        answer_mask: torch.LongTensor = None,
         pixel_values: torch.FloatTensor,     # shape = (B, 3, H, W)
         image_grid_thw: torch.Tensor = None,
+        answer_mask: torch.LongTensor = None,
         return_latent_attn: bool = False,
         return_token_norms: bool = False,
         latent_attn_threshold: float = None,
