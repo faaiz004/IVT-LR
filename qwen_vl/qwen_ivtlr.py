@@ -156,6 +156,11 @@ class IVTLR(nn.Module):
 
     @staticmethod
     def _compute_answer_logprob(logits, labels, answer_mask):
+        seq_len = min(logits.size(1), labels.size(1), answer_mask.size(1))
+        logits = logits[..., -seq_len:, :]
+        labels = labels[..., -seq_len:]
+        answer_mask = answer_mask[..., -seq_len:]
+
         shift_logits = logits[..., :-1, :]
         shift_labels = labels[..., 1:]
         shift_answer_mask = answer_mask[..., 1:].bool()
