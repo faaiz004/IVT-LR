@@ -71,6 +71,28 @@ def main():
     parser.add_argument("--local_rank", type=int, default=-1, help="Local rank passed by DeepSpeed")
     parser.add_argument("--patch_reuse_policy", choices=["never", "next_step_only", "always"], default=None,
                         help="Patch selection reuse policy across latent reasoning steps")
+    qvr_group = parser.add_mutually_exclusive_group()
+    qvr_group.add_argument("--qvr_loss", dest="qvr_loss", action="store_true",
+                           help="Enable question-conditioned visual routing loss.")
+    qvr_group.add_argument("--no_qvr_loss", dest="qvr_loss", action="store_false",
+                           help="Disable question-conditioned visual routing loss.")
+    parser.set_defaults(qvr_loss=None)
+    causal_group = parser.add_mutually_exclusive_group()
+    causal_group.add_argument("--causal_loss", dest="causal_loss", action="store_true",
+                              help="Enable causal contrastive loss.")
+    causal_group.add_argument("--no_causal_loss", dest="causal_loss", action="store_false",
+                              help="Disable causal contrastive loss.")
+    parser.set_defaults(causal_loss=None)
+    parser.add_argument("--lambda_qvr", type=float, default=None,
+                        help="Weight for question-conditioned visual routing loss.")
+    parser.add_argument("--lambda_causal", type=float, default=None,
+                        help="Weight for causal contrastive loss.")
+    parser.add_argument("--qvr_num_layers", type=int, default=None,
+                        help="Number of last layers to average for QVR loss.")
+    parser.add_argument("--qvr_epsilon", type=float, default=None,
+                        help="Epsilon for QVR loss.")
+    parser.add_argument("--causal_epsilon", type=float, default=None,
+                        help="Epsilon for causal loss.")
     args = parser.parse_args()
 
     # Initialize DeepSpeed
@@ -86,6 +108,27 @@ def main():
 
     configs = Config(config_dict)
     patch_reuse_policy = args.patch_reuse_policy or getattr(configs, "patch_reuse_policy", "never")
+    enable_qvr_loss = args.qvr_loss if args.qvr_loss is not None else bool(
+        getattr(configs, "enable_qvr_loss", False)
+    )
+    enable_causal_loss = args.causal_loss if args.causal_loss is not None else bool(
+        getattr(configs, "enable_causal_loss", False)
+    )
+    qvr_loss_weight = args.lambda_qvr if args.lambda_qvr is not None else float(
+        getattr(configs, "qvr_loss_weight", 0.01)
+    )
+    causal_loss_weight = args.lambda_causal if args.lambda_causal is not None else float(
+        getattr(configs, "causal_loss_weight", 0.05)
+    )
+    qvr_num_layers = args.qvr_num_layers if args.qvr_num_layers is not None else int(
+        getattr(configs, "qvr_num_layers", 4)
+    )
+    qvr_loss_epsilon = args.qvr_epsilon if args.qvr_epsilon is not None else float(
+        getattr(configs, "qvr_loss_epsilon", 1e-8)
+    )
+    causal_loss_epsilon = args.causal_epsilon if args.causal_epsilon is not None else float(
+        getattr(configs, "causal_loss_epsilon", 1e-8)
+    )
     set_seed(configs.seed)
     save_dir = os.path.join(configs.save_path, configs.name)
 
@@ -161,6 +204,13 @@ def main():
         visual_start_id,
         visual_end_id,
         patch_reuse_policy=patch_reuse_policy,
+        enable_qvr_loss=enable_qvr_loss,
+        qvr_loss_weight=qvr_loss_weight,
+        qvr_loss_epsilon=qvr_loss_epsilon,
+        qvr_num_layers=qvr_num_layers,
+        enable_causal_loss=enable_causal_loss,
+        causal_loss_weight=causal_loss_weight,
+        causal_loss_epsilon=causal_loss_epsilon,
     )
 
     print(f"Running Deepspeed on rank = {rank}, world size = {world_size}")
@@ -378,6 +428,10 @@ def main():
                     "train/loss": loss.detach().float()
                     # * configs.gradient_accumulation_steps,
                 }
+                if outputs.qvr_loss is not None:
+                    log_dict["train/qvr_loss"] = outputs.qvr_loss.detach().float()
+                if outputs.causal_loss is not None:
+                    log_dict["train/causal_loss"] = outputs.causal_loss.detach().float()
                 wandb_run.log(log_dict)
             # print("line432")
             pbar.set_description(

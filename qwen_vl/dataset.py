@@ -139,6 +139,8 @@ class MyCollator:
                     feature["labels"] = [self.label_pad_token_id] * n_tok_pad + feature[
                         "labels"
                     ]
+                if "answer_mask" in feature:
+                    feature["answer_mask"] = [0] * n_tok_pad + feature["answer_mask"]
                 feature["attention_mask"] = [0] * n_tok_pad + feature["attention_mask"]
 
         return_tensors = "pt"
@@ -149,7 +151,7 @@ class MyCollator:
             {
                 k: v
                 for k, v in feature.items()
-                if k != label_name and k != "position_ids"
+                if k != label_name and k != "position_ids" and k != "answer_mask"
             }
             for feature in features
         ]
@@ -196,6 +198,14 @@ class MyCollator:
                 batch["position_ids"], dtype=torch.int64
             )
 
+        if "answer_mask" in features[0]:
+            answer_masks = [feature["answer_mask"] for feature in features]
+            max_answer_len = max(len(m) for m in answer_masks)
+            batch["answer_mask"] = [
+                mask + [0] * (max_answer_len - len(mask)) for mask in answer_masks
+            ]
+            batch["answer_mask"] = torch.tensor(batch["answer_mask"], dtype=torch.int64)
+
         return batch
 
 def get_cot_latent_dataset(
@@ -229,14 +239,19 @@ def get_cot_latent_dataset(
                 scheduled_stage_to_train,
             )
 
+        steps_tokenized = sample["steps_tokenized"][n_skip_steps:]
+        steps_len = sum(len(step) for step in steps_tokenized)
+
         tokens = (
             sample["question_tokenized"]
             + [latent_id] * n_latent_tokens
-            + list(
-                itertools.chain.from_iterable(sample["steps_tokenized"][n_skip_steps:])
-            )
+            + list(itertools.chain.from_iterable(steps_tokenized))
             + sample["answer_tokenized"]
         )
+
+        answer_start = len(sample["question_tokenized"]) + n_latent_tokens + steps_len
+        answer_len = len(sample["answer_tokenized"])
+        answer_mask = [0] * answer_start + [1] * answer_len
         
         return {
             "input_ids": tokens,
@@ -250,6 +265,7 @@ def get_cot_latent_dataset(
                 + len(sample["question_tokenized"]) :
             ],
             "attention_mask": [1] * len(tokens),
+            "answer_mask": answer_mask,
             "idx": sample["idx"],
             "position_ids": list(range(len(tokens))),
             "pixel_values": torch.tensor(sample["pixel_values"]),

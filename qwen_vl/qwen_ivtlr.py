@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 from collections import namedtuple
 from transformers.models.gpt2 import GPT2LMHeadModel
@@ -16,7 +17,17 @@ from transformers.cache_utils import DynamicCache
 
 Outputs = namedtuple(
     "Outputs",
-    ["loss", "ce_loss", "nvt_loss", "inputs_embeds", "logits", "latent_attn_trace", "token_norms"],
+    [
+        "loss",
+        "ce_loss",
+        "nvt_loss",
+        "qvr_loss",
+        "causal_loss",
+        "inputs_embeds",
+        "logits",
+        "latent_attn_trace",
+        "token_norms",
+    ],
 )
 MAX_N_LATENT = 4 
 
@@ -40,6 +51,13 @@ class IVTLR(nn.Module):
         enable_nvt_loss: bool = False,
         nvt_loss_weight: float = 0.0,
         nvt_loss_epsilon: float = 1e-8,
+        enable_qvr_loss: bool = False,
+        qvr_loss_weight: float = 0.0,
+        qvr_loss_epsilon: float = 1e-8,
+        qvr_num_layers: int = 4,
+        enable_causal_loss: bool = False,
+        causal_loss_weight: float = 0.0,
+        causal_loss_epsilon: float = 1e-8,
     ):
 
         super(IVTLR, self).__init__()
@@ -67,6 +85,13 @@ class IVTLR(nn.Module):
         self.enable_nvt_loss = enable_nvt_loss and nvt_loss_weight > 0
         self.nvt_loss_weight = nvt_loss_weight
         self.nvt_loss_epsilon = float(nvt_loss_epsilon) if nvt_loss_epsilon is not None else 1e-8
+        self.enable_qvr_loss = enable_qvr_loss and qvr_loss_weight > 0
+        self.qvr_loss_weight = qvr_loss_weight
+        self.qvr_loss_epsilon = float(qvr_loss_epsilon) if qvr_loss_epsilon is not None else 1e-8
+        self.qvr_num_layers = max(int(qvr_num_layers), 1)
+        self.enable_causal_loss = enable_causal_loss and causal_loss_weight > 0
+        self.causal_loss_weight = causal_loss_weight
+        self.causal_loss_epsilon = float(causal_loss_epsilon) if causal_loss_epsilon is not None else 1e-8
 
         # tested with GPT2 and Llama3
         if isinstance(self.base_causallm, GPT2LMHeadModel):
@@ -121,11 +146,36 @@ class IVTLR(nn.Module):
             "max": float(norms_tensor.max().item()),
         }
 
+    @staticmethod
+    def _average_last_attentions(attentions, num_layers):
+        if not attentions:
+            return None
+        n_layers = min(num_layers, len(attentions))
+        stacked = torch.stack(attentions[-n_layers:], dim=0)
+        return stacked.mean(dim=0)
+
+    @staticmethod
+    def _compute_answer_logprob(logits, labels, answer_mask):
+        shift_logits = logits[..., :-1, :]
+        shift_labels = labels[..., 1:]
+        shift_answer_mask = answer_mask[..., 1:].bool()
+        log_probs = torch.log_softmax(shift_logits, dim=-1)
+        safe_labels = shift_labels.clone()
+        safe_labels[safe_labels == -100] = 0
+        gathered = log_probs.gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
+        valid = shift_answer_mask & (shift_labels != -100)
+        gathered = gathered.masked_fill(~valid, 0.0)
+        token_counts = valid.sum(dim=-1)
+        token_counts_clamped = token_counts.clamp(min=1)
+        mean_logprob = gathered.sum(dim=-1) / token_counts_clamped
+        return mean_logprob, token_counts
+
     def forward(
         self,
         input_ids: torch.LongTensor,        # shape = (B, S)
         attention_mask: torch.LongTensor,    # shape = (B, S)
         labels: torch.LongTensor,            # shape = (B, S)
+        answer_mask: torch.LongTensor = None,
         position_ids: torch.LongTensor,      # shape = (B, S)
         pixel_values: torch.FloatTensor,     # shape = (B, 3, H, W)
         image_grid_thw: torch.Tensor = None,
@@ -175,7 +225,8 @@ class IVTLR(nn.Module):
         recently_selected_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
         patch_insert_mask = None
         reasoning_insert_mask = None
-        if return_token_norms:
+        need_insert_origin_masks = return_token_norms or self.enable_qvr_loss or self.enable_causal_loss
+        if need_insert_origin_masks:
             patch_insert_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
             reasoning_insert_mask = torch.zeros((B, max_len), dtype=torch.bool, device=input_ids.device)
 
@@ -247,8 +298,8 @@ class IVTLR(nn.Module):
                 select_image_embeds = []
                 current_selected_mask = torch.zeros_like(image_mask)
                 selected_counts = []
-                selected_patch_origins = [] if return_token_norms else None
-                selected_reasoning_origins = [] if return_token_norms else None
+                selected_patch_origins = [] if need_insert_origin_masks else None
+                selected_reasoning_origins = [] if need_insert_origin_masks else None
 
                 for b in range(B):
                     last_attn = avg_attn[b, end - 1]  # shape=(seq_len,)
@@ -362,7 +413,7 @@ class IVTLR(nn.Module):
                     logging.debug(f"selected image idx: {image_abs_idxs}")
                     logging.debug(f"selected trace idx: {trace_abs_idxs}")
                     logging.debug(f"abs idx: {abs_idxs}")
-                    if return_token_norms:
+                    if need_insert_origin_masks:
                         selected_patch_origins.append(image_mask[b, abs_idxs].clone())
                         selected_reasoning_origins.append(trace_mask[b, abs_idxs].clone())
                     if self.patch_reuse_policy == "never":
@@ -392,8 +443,8 @@ class IVTLR(nn.Module):
                 new_image_mask = []
                 new_trace_mask = []
                 new_recently_selected_mask = []
-                new_patch_insert_mask = [] if return_token_norms else None
-                new_reasoning_insert_mask = [] if return_token_norms else None
+                new_patch_insert_mask = [] if need_insert_origin_masks else None
+                new_reasoning_insert_mask = [] if need_insert_origin_masks else None
                 current_inserted_spans = []
                 batch_max_len = 0
 
@@ -447,7 +498,7 @@ class IVTLR(nn.Module):
                         merged_recent = torch.cat([recent_pref, recent_v, recent_suf], dim=0)
                         new_recently_selected_mask.append(merged_recent)
 
-                    if return_token_norms:
+                    if need_insert_origin_masks:
                         patch_pref = patch_insert_mask[b, :end_b]
                         patch_suf = patch_insert_mask[b, end_b:]
                         patch_v = selected_patch_origins[b].to(torch.bool)
@@ -489,7 +540,7 @@ class IVTLR(nn.Module):
                     if self.patch_reuse_policy == "next_step_only":
                         recent_b = new_recently_selected_mask[b]
                         padded_recent.append(recent_b.unsqueeze(0))
-                    if return_token_norms:
+                    if need_insert_origin_masks:
                         patch_b = new_patch_insert_mask[b]
                         reasoning_b = new_reasoning_insert_mask[b]
                         padded_patch.append(patch_b.unsqueeze(0))
@@ -503,7 +554,7 @@ class IVTLR(nn.Module):
                 trace_mask     = torch.cat(padded_trace, dim=0)
                 if self.patch_reuse_policy == "next_step_only":
                     recently_selected_mask = torch.cat(padded_recent, dim=0)
-                if return_token_norms:
+                if need_insert_origin_masks:
                     patch_insert_mask = torch.cat(padded_patch, dim=0)
                     reasoning_insert_mask = torch.cat(padded_reasoning, dim=0)
                 prev_inserted_spans = current_inserted_spans
@@ -521,7 +572,7 @@ class IVTLR(nn.Module):
                         raise ValueError("all_image_patches currently supports batch_size=1 only.")
                     end = end + 1 + selected_counts[0]
 
-            output_attentions = self.enable_nvt_loss or return_latent_attn
+            output_attentions = self.enable_nvt_loss or return_latent_attn or self.enable_qvr_loss
             if kv_cache:
                 outputs = self.base_causallm(
                     inputs_embeds=inputs_embeds[:, :end, :],
@@ -620,24 +671,119 @@ class IVTLR(nn.Module):
                     },
                 })
 
+        qvr_loss = None
+        if (
+            self.enable_qvr_loss
+            and outputs.attentions is not None
+            and max_n_latents > 0
+            and patch_insert_mask is not None
+        ):
+            avg_attn = self._average_last_attentions(outputs.attentions, self.qvr_num_layers)
+            if avg_attn is not None:
+                attn = avg_attn.mean(dim=1)
+                seq_len = attn.size(-1)
+                positions = torch.arange(seq_len, device=attn.device).unsqueeze(0).expand(B, -1)
+                per_losses = []
+                for b in range(B):
+                    if not latent_lists[b]:
+                        continue
+                    first_latent_pos = latent_lists[b][0]
+                    question_mask_b = (
+                        original_mask[b, :seq_len]
+                        & (~image_mask[b, :seq_len])
+                        & (positions[b] < first_latent_pos)
+                    )
+                    if not question_mask_b.any():
+                        continue
+                    for t_idx in latent_lists[b]:
+                        if t_idx >= seq_len:
+                            continue
+                        vis_mask = patch_insert_mask[b, :seq_len] & (positions[b] < t_idx)
+                        if not vis_mask.any():
+                            m_vis = attn.new_tensor(0.0)
+                        else:
+                            m_vis = attn[b, t_idx, vis_mask].sum()
+                        m_ques = attn[b, t_idx, question_mask_b].sum()
+                        h_val = (2.0 * m_vis * m_ques) / (
+                            m_vis + m_ques + self.qvr_loss_epsilon
+                        )
+                        per_losses.append(-torch.log(h_val + self.qvr_loss_epsilon))
+                if per_losses:
+                    qvr_loss = torch.stack(per_losses).mean()
+
 
         new_labels = torch.full((B, final_S), -100, device=input_ids.device, dtype=labels.dtype)
         for b in range(B):
             num_labels = labels.size(1)
             new_labels[b, -num_labels:] = labels[b]
+
+        new_answer_mask = None
+        if answer_mask is not None:
+            new_answer_mask = torch.zeros((B, final_S), device=answer_mask.device, dtype=answer_mask.dtype)
+            for b in range(B):
+                num_labels = labels.size(1)
+                new_answer_mask[b, -num_labels:] = answer_mask[b]
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = new_labels[..., 1:].contiguous()
         loss_fct = CrossEntropyLoss(ignore_index=-100)
         ce_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
         nvt_loss = torch.stack(nvt_losses).mean() if (self.enable_nvt_loss and nvt_losses) else None
+        causal_loss = None
+        if (
+            self.enable_causal_loss
+            and new_answer_mask is not None
+            and patch_insert_mask is not None
+            and B > 1
+        ):
+            final_seq_len = inputs_embeds.size(1)
+            perm = torch.randperm(B, device=inputs_embeds.device)
+            if torch.any(perm == torch.arange(B, device=inputs_embeds.device)):
+                perm = torch.arange(B, device=inputs_embeds.device).roll(1)
+
+            inputs_embeds_corrupt = inputs_embeds.clone()
+            for b in range(B):
+                tgt_pos = patch_insert_mask[b, :final_seq_len].nonzero(as_tuple=True)[0]
+                if tgt_pos.numel() == 0:
+                    continue
+                donor_pos = patch_insert_mask[perm[b], :final_seq_len].nonzero(as_tuple=True)[0]
+                if donor_pos.numel() == 0:
+                    continue
+                donor_embeds = inputs_embeds[perm[b], donor_pos, :]
+                if donor_embeds.size(0) < tgt_pos.numel():
+                    repeat_count = (tgt_pos.numel() + donor_embeds.size(0) - 1) // donor_embeds.size(0)
+                    donor_embeds = donor_embeds.repeat(repeat_count, 1)[:tgt_pos.numel()]
+                elif donor_embeds.size(0) > tgt_pos.numel():
+                    donor_embeds = donor_embeds[:tgt_pos.numel()]
+                inputs_embeds_corrupt[b, tgt_pos, :] = donor_embeds
+
+            corrupt_outputs = self.base_causallm(
+                inputs_embeds=inputs_embeds_corrupt[:, :final_seq_len, :],
+                attention_mask=attention_mask[:, :final_seq_len],
+                position_ids=position_ids[:, :final_seq_len],
+                output_hidden_states=False,
+                output_attentions=False,
+            )
+            s_real, real_counts = self._compute_answer_logprob(logits, new_labels, new_answer_mask)
+            s_corrupt, corrupt_counts = self._compute_answer_logprob(
+                corrupt_outputs.logits, new_labels, new_answer_mask
+            )
+            valid = (real_counts > 0) & (corrupt_counts > 0)
+            if valid.any():
+                causal_loss = F.softplus(-(s_real - s_corrupt))[valid].mean()
         loss = ce_loss
         if nvt_loss is not None:
             loss = loss + self.nvt_loss_weight * nvt_loss
+        if qvr_loss is not None:
+            loss = loss + self.qvr_loss_weight * qvr_loss
+        if causal_loss is not None:
+            loss = loss + self.causal_loss_weight * causal_loss
 
         return Outputs(
             loss=loss,
             ce_loss=ce_loss,
             nvt_loss=nvt_loss,
+            qvr_loss=qvr_loss,
+            causal_loss=causal_loss,
             inputs_embeds=inputs_embeds,
             logits=logits,
             latent_attn_trace=latent_attn_trace,
