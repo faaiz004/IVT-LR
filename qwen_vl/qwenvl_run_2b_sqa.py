@@ -418,7 +418,7 @@ def main():
             outputs = model_engine(**batch)
             loss = outputs.loss
             print(f"loss: {loss}")
-            if rank == 0 and (step + 1) % 300 == 0:
+            if rank == 0 and (step + 1) % 50 == 0:
                 ce_loss = outputs.ce_loss.detach().float()
                 nvt_loss = outputs.nvt_loss.detach().float() if outputs.nvt_loss is not None else torch.tensor(0.0)
                 qvr_loss = outputs.qvr_loss.detach().float() if outputs.qvr_loss is not None else torch.tensor(0.0)
