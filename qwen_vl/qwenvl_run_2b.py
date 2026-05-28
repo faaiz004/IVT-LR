@@ -222,6 +222,13 @@ def main():
         enable_nvt_loss=getattr(configs, "enable_nvt_loss", False),
         nvt_loss_weight=getattr(configs, "nvt_loss_weight", 0.0),
         nvt_loss_epsilon=getattr(configs, "nvt_loss_epsilon", 1e-8),
+        enable_qvr_loss=enable_qvr_loss,
+        qvr_loss_weight=qvr_loss_weight,
+        qvr_loss_epsilon=qvr_loss_epsilon,
+        qvr_num_layers=qvr_num_layers,
+        enable_causal_loss=enable_causal_loss,
+        causal_loss_weight=causal_loss_weight,
+        causal_loss_epsilon=causal_loss_epsilon,
     )
 
     if start_epoch > 0:
@@ -296,13 +303,6 @@ def main():
         del example["choices"]
 
         messages = [{
-            enable_qvr_loss=enable_qvr_loss,
-            qvr_loss_weight=qvr_loss_weight,
-            qvr_loss_epsilon=qvr_loss_epsilon,
-            qvr_num_layers=qvr_num_layers,
-            enable_causal_loss=enable_causal_loss,
-            causal_loss_weight=causal_loss_weight,
-            causal_loss_epsilon=causal_loss_epsilon,
             "role": "user",
             "content": [
                 {"type": "image", "image": example["image"], "resized_height": 280, "resized_width": 280},
