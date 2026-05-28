@@ -133,6 +133,38 @@ class IVTLR(nn.Module):
 
         return torch.stack(per_batch_losses).mean()
 
+    def _compute_qvr_loss(self, attentions, query_index, inserted_spans, question_mask):
+        if not inserted_spans:
+            return None
+
+        avg_attn = self._average_last_attentions(attentions, self.qvr_num_layers)
+        if avg_attn is None:
+            return None
+
+        attn = avg_attn.mean(dim=1)
+        seq_len = attn.size(-1)
+        if query_index >= seq_len:
+            return None
+
+        per_batch_losses = []
+        for batch_index, span in enumerate(inserted_spans):
+            if span is None:
+                continue
+
+            span_start, span_end = span
+            if span_end <= span_start:
+                continue
+
+            vis_mass = attn[batch_index, query_index, span_start:span_end].sum()
+            ques_mass = attn[batch_index, query_index, question_mask[batch_index]].sum()
+            h_val = (2.0 * vis_mass * ques_mass) / (vis_mass + ques_mass + self.qvr_loss_epsilon)
+            per_batch_losses.append(-torch.log(h_val + self.qvr_loss_epsilon))
+
+        if not per_batch_losses:
+            return None
+
+        return torch.stack(per_batch_losses).mean()
+
     @staticmethod
     def _summarize_norms(norms_tensor: torch.Tensor):
         if norms_tensor.numel() == 0:
@@ -256,6 +288,7 @@ class IVTLR(nn.Module):
         kv_cache = None
         all_logits = []
         nvt_losses = []
+        qvr_losses = []
         prev_inserted_spans = None
 
         if max_n_latents > 0:
@@ -296,6 +329,26 @@ class IVTLR(nn.Module):
                     nvt_loss = self._compute_nvt_loss(attentions, end - 1, prev_inserted_spans)
                     if nvt_loss is not None:
                         nvt_losses.append(nvt_loss)
+
+                if self.enable_qvr_loss and prev_inserted_spans is not None:
+                    if B > 0:
+                        seq_len_this_pass = attention_mask[:, :end].size(1)
+                        positions_this_pass = torch.arange(seq_len_this_pass, device=input_ids.device).unsqueeze(0).expand(B, -1)
+                        first_latent_pos = min(lst[0] for lst in latent_lists if len(lst) > 0) if any(len(lst) > 0 for lst in latent_lists) else None
+                        if first_latent_pos is not None:
+                            question_mask = (
+                                original_mask[:, :end]
+                                & (~image_mask[:, :end])
+                                & (positions_this_pass < first_latent_pos)
+                            )
+                            qvr_loss = self._compute_qvr_loss(
+                                attentions,
+                                end - 1,
+                                prev_inserted_spans,
+                                question_mask,
+                            )
+                            if qvr_loss is not None:
+                                qvr_losses.append(qvr_loss)
 
                 #   Top-K
                 avg_attn = torch.cat(attentions, dim=1).mean(dim=1)  # (B, seq_len)
@@ -603,7 +656,6 @@ class IVTLR(nn.Module):
                 nvt_loss = self._compute_nvt_loss(outputs.attentions, end - 1, prev_inserted_spans)
                 if nvt_loss is not None:
                     nvt_losses.append(nvt_loss)
-
         else:
             outputs = self.base_causallm(
                 input_ids=input_ids,
@@ -676,45 +728,7 @@ class IVTLR(nn.Module):
                     },
                 })
 
-        qvr_loss = None
-        if (
-            self.enable_qvr_loss
-            and outputs.attentions is not None
-            and max_n_latents > 0
-            and patch_insert_mask is not None
-        ):
-            avg_attn = self._average_last_attentions(outputs.attentions, self.qvr_num_layers)
-            if avg_attn is not None:
-                attn = avg_attn.mean(dim=1)
-                seq_len = attn.size(-1)
-                positions = torch.arange(seq_len, device=attn.device).unsqueeze(0).expand(B, -1)
-                per_losses = []
-                for b in range(B):
-                    if not latent_lists[b]:
-                        continue
-                    first_latent_pos = latent_lists[b][0]
-                    question_mask_b = (
-                        original_mask[b, :seq_len]
-                        & (~image_mask[b, :seq_len])
-                        & (positions[b] < first_latent_pos)
-                    )
-                    if not question_mask_b.any():
-                        continue
-                    for t_idx in latent_lists[b]:
-                        if t_idx >= seq_len:
-                            continue
-                        vis_mask = patch_insert_mask[b, :seq_len] & (positions[b] < t_idx)
-                        if not vis_mask.any():
-                            m_vis = attn.new_tensor(0.0)
-                        else:
-                            m_vis = attn[b, t_idx, vis_mask].sum()
-                        m_ques = attn[b, t_idx, question_mask_b].sum()
-                        h_val = (2.0 * m_vis * m_ques) / (
-                            m_vis + m_ques + self.qvr_loss_epsilon
-                        )
-                        per_losses.append(-torch.log(h_val + self.qvr_loss_epsilon))
-                if per_losses:
-                    qvr_loss = torch.stack(per_losses).mean()
+        qvr_loss = torch.stack(qvr_losses).mean() if (self.enable_qvr_loss and qvr_losses) else None
 
 
         new_labels = torch.full((B, final_S), -100, device=input_ids.device, dtype=labels.dtype)
