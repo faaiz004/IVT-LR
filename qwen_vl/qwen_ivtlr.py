@@ -668,6 +668,34 @@ class IVTLR(nn.Module):
             )
             all_logits.append(outputs.logits)
 
+        if self.enable_qvr_loss and prev_inserted_spans is not None:
+            final_seq_len = inputs_embeds.size(1)
+            final_outputs = self.base_causallm(
+                inputs_embeds=inputs_embeds[:, :final_seq_len, :],
+                attention_mask=attention_mask[:, :final_seq_len],
+                position_ids=position_ids[:, :final_seq_len],
+                pixel_values=pixel_values,
+                image_grid_thw=image_grid_thw,
+                output_hidden_states=False,
+                output_attentions=True,
+            )
+            if any(len(lst) > 0 for lst in latent_lists):
+                positions_final = torch.arange(final_seq_len, device=input_ids.device).unsqueeze(0).expand(B, -1)
+                first_latent_pos = min(lst[0] for lst in latent_lists if len(lst) > 0)
+                question_mask_final = (
+                    original_mask[:, :final_seq_len]
+                    & (~image_mask[:, :final_seq_len])
+                    & (positions_final < first_latent_pos)
+                )
+                final_qvr_loss = self._compute_qvr_loss(
+                    final_outputs.attentions,
+                    final_seq_len - 1,
+                    prev_inserted_spans,
+                    question_mask_final,
+                )
+                if final_qvr_loss is not None:
+                    qvr_losses.append(final_qvr_loss)
+
         latent_attn_trace = None
         if return_latent_attn and outputs.attentions is not None and max_n_latents > 0:
             final_attn = outputs.attentions[-1].mean(dim=1)
