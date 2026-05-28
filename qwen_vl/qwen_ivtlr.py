@@ -133,7 +133,7 @@ class IVTLR(nn.Module):
 
         return torch.stack(per_batch_losses).mean()
 
-    def _compute_qvr_loss(self, attentions, query_index, inserted_spans, question_mask):
+    def _compute_qvr_loss(self, attentions, query_positions, inserted_spans, question_mask):
         if not inserted_spans:
             return None
 
@@ -143,12 +143,14 @@ class IVTLR(nn.Module):
 
         attn = avg_attn.mean(dim=1)
         seq_len = attn.size(-1)
-        if query_index >= seq_len:
-            return None
 
         per_batch_losses = []
         for batch_index, span in enumerate(inserted_spans):
             if span is None:
+                continue
+
+            query_index = query_positions[batch_index]
+            if query_index is None or query_index < 0 or query_index >= seq_len:
                 continue
 
             span_start, span_end = span
@@ -341,9 +343,13 @@ class IVTLR(nn.Module):
                                 & (~image_mask[:, :end])
                                 & (positions_this_pass < first_latent_pos)
                             )
+                            query_positions = [
+                                (lst[pass_idx] if pass_idx < len(lst) else (lst[-1] if lst else None))
+                                for lst in latent_lists
+                            ]
                             qvr_loss = self._compute_qvr_loss(
                                 attentions,
-                                end - 1,
+                                query_positions,
                                 prev_inserted_spans,
                                 question_mask,
                             )
@@ -687,9 +693,10 @@ class IVTLR(nn.Module):
                     & (~image_mask[:, :final_seq_len])
                     & (positions_final < first_latent_pos)
                 )
+                final_query_positions = [lst[-1] if len(lst) > 0 else None for lst in latent_lists]
                 final_qvr_loss = self._compute_qvr_loss(
                     final_outputs.attentions,
-                    final_seq_len - 1,
+                    final_query_positions,
                     prev_inserted_spans,
                     question_mask_final,
                 )
