@@ -16,6 +16,6 @@ gradient_accumulation_steps: 8
 num_epochs: 16
 lr: !!float "4e-5"
 patch_reuse_policy: never
-enable_nvt_loss: True
+enable_nvt_loss: False
 nvt_loss_weight: 0.1
 nvt_loss_epsilon: !!float "1e-8"
