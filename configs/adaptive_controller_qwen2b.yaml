@@ -1,16 +1,17 @@
 project: ivtlr_adaptive_controller
 model_id: Qwen/Qwen2-VL-2B-Instruct
-# Set this to the fully trained IVT-LR fp32 checkpoint, e.g.
-# /path/IVT-LR/qwen_vl_2b/qwen2b_IVTLR/epoch_16_full_model_fp32.pth
-ivtlr_checkpoint_path: null
+
+# Set this to your fully trained IVT-LR epoch-16 fp32 checkpoint.
+ivtlr_checkpoint_path: /path/IVT-LR/qwen_vl_2b/qwen2b_IVTLR/epoch_16_full_model_fp32.pth
 teacher_checkpoint_path: null
+
 output_dir: adaptive_controller_runs/qwen2vl_2b
 
 dataset_name: LightChen2333/M3CoT
 dataset_split: train
-max_train_examples: 100000000
-num_proc: 8
-num_workers: 1
+max_train_examples: 3000
+num_proc: 16
+num_workers: 2
 
 seed: 0
 bf16: true
@@ -24,25 +25,26 @@ max_latent_stage: 5
 scheduled_stage: 5
 pad_latent_to_max: true
 batch_size_training: 1
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 4
 patch_reuse_policy: never
 
 teacher_k: 10
 budget_candidates: [2, 4, 6, 8, 10]
 max_controller_steps: 10
-lambda_patch: 0.002
-reward_temperature: 1.0
+
+lambda_patch: 0.001
+reward_temperature: 0.7
 advantage_mode: softmax
 
 freeze_base_model: true
 train_controller_only: true
 use_step_embedding: true
-controller_hidden_dim: null
-controller_lr: 0.0001
-weight_decay: 0.0
+controller_hidden_dim: 1024
+controller_lr: 0.0002
+weight_decay: 0.01
 grad_clip_norm: 1.0
 
-log_every: 10
-save_every: 500
-num_debug_traces: 5
-max_train_steps: 0
+log_every: 5
+save_every: 250
+num_debug_traces: 20
+max_train_steps: 1500
