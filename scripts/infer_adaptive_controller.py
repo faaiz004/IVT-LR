@@ -9,6 +9,7 @@ from datetime import timedelta
 import torch
 import yaml
 from datasets import load_dataset
+from peft import set_peft_model_state_dict
 from qwen_vl_utils import process_vision_info
 from tqdm import tqdm
 
@@ -157,6 +158,17 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, _, processor = build_qwen2vl_adaptive_model(configs, device)
 
+    lora_stage2_path = getattr(configs, "lora_stage2_checkpoint_path", None)
+    if lora_stage2_path:
+        lora_state = torch.load(lora_stage2_path, map_location=device)
+        result = set_peft_model_state_dict(model.base_causallm, lora_state)
+        missing = len(getattr(result, "missing_keys", []))
+        unexpected = len(getattr(result, "unexpected_keys", []))
+        print(
+            f"Loaded Stage 2 LoRA checkpoint from {lora_stage2_path}. "
+            f"missing={missing} unexpected={unexpected}"
+        )
+
     controller_path = args.controller_checkpoint_path or getattr(
         configs, "controller_checkpoint_path", None
     )
@@ -274,6 +286,7 @@ def main():
         "selected_count_histogram": selected_count_hist,
         "prediction_output_path": output_path,
         "controller_checkpoint_path": controller_path,
+        "lora_stage2_checkpoint_path": lora_stage2_path,
     }
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)

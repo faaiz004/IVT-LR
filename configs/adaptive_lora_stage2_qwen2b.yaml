@@ -1,0 +1,46 @@
+project: ivtlr_adaptive_lora_stage2
+model_id: Qwen/Qwen2-VL-2B-Instruct
+
+ivtlr_checkpoint_path: /content/checkpoints/epoch_16_full_model_fp32.pth
+teacher_checkpoint_path: null
+controller_checkpoint_path: /content/drive/MyDrive/adaptive_controller_runs/qwen2vl_2b_grpo_stage1_min2_no_patch_penalty/controller_grpo_final.pt
+lora_stage2_checkpoint_path: null
+
+output_dir: /content/drive/MyDrive/adaptive_controller_runs/qwen2vl_2b_stage2_lora
+
+dataset_name: LightChen2333/M3CoT
+dataset_split: train
+max_train_examples: 3000
+num_proc: 16
+num_workers: 1
+
+seed: 4
+bf16: true
+use_lora: true
+lora_r: 64
+lora_alpha: 16
+lora_dropout: 0.05
+
+epochs_per_stage: 3
+max_latent_stage: 3
+scheduled_stage: 3
+pad_latent_to_max: true
+batch_size_training: 1
+gradient_accumulation_steps: 4
+
+patch_reuse_policy: always
+teacher_k: 10
+max_controller_steps: 10
+controller_hidden_dim: 1024
+use_step_embedding: true
+
+freeze_base_model: false
+train_controller_only: false
+
+stage2_lora_lr: 0.00001
+weight_decay: 0.0
+grad_clip_norm: 1.0
+
+log_every: 5
+save_every: 250
+max_train_steps: 1000
