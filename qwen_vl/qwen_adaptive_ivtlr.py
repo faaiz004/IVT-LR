@@ -242,7 +242,7 @@ class QwenAdaptiveIVTLR(nn.Module):
             selected_positions.append(pos)
             selected_embeds.append(embeds)
             selected_counts.append(embeds.size(0))
-        return selected_positions, selected_embeds, selected_counts
+        return selected_positions, selected_embeds, selected_counts, rel_indices
 
     def _merge_selected_embeddings(
         self,
@@ -444,7 +444,7 @@ class QwenAdaptiveIVTLR(nn.Module):
                 attn_scores,
                 top_k=max(self.teacher_k, forced_budget or 0),
             )
-            selected_positions, selected_embeds, selected_counts = self._select_for_step(
+            selected_positions, selected_embeds, selected_counts, selected_rel_indices = self._select_for_step(
                 mode,
                 pass_idx,
                 reasoning_state,
@@ -470,7 +470,11 @@ class QwenAdaptiveIVTLR(nn.Module):
                 )
             if mode == "adaptive":
                 controller_trace.append(
-                    {"latent_step_idx": pass_idx, "selected_counts": torch.tensor(selected_counts)}
+                    {
+                        "latent_step_idx": pass_idx,
+                        "selected_counts": torch.tensor(selected_counts),
+                        "selected_patch_indices": selected_rel_indices.detach().cpu(),
+                    }
                 )
 
             (
@@ -590,3 +594,105 @@ class QwenAdaptiveIVTLR(nn.Module):
     @staticmethod
     def _gather_trace_patch_embeddings(step: LatentStepTrace) -> torch.Tensor:
         return step.patch_embeddings
+
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids,
+        attention_mask,
+        pixel_values,
+        image_grid_thw,
+        max_new_tokens: int = 128,
+        output_controller_trace: bool = False,
+    ):
+        if input_ids.size(0) != 1:
+            raise ValueError("Adaptive controller generation currently supports batch_size=1.")
+
+        self.eval()
+        position_ids = torch.arange(
+            input_ids.size(1),
+            dtype=torch.long,
+            device=input_ids.device,
+        ).unsqueeze(0)
+        adaptive_out = self.forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=input_ids.clone(),
+            position_ids=position_ids,
+            pixel_values=pixel_values,
+            image_grid_thw=image_grid_thw,
+            mode="adaptive",
+        )
+
+        tokens = input_ids[0].detach().tolist()
+        next_token = torch.argmax(adaptive_out.logits[0, -1]).item()
+        tokens.append(next_token)
+
+        current_inputs_embeds = adaptive_out.inputs_embeds
+        current_attention_mask = torch.ones(
+            (1, current_inputs_embeds.size(1)),
+            device=current_inputs_embeds.device,
+            dtype=attention_mask.dtype,
+        )
+        next_token_embedding = self.embedding(
+            torch.tensor([[next_token]], device=current_inputs_embeds.device)
+        )
+        current_inputs_embeds = torch.cat([current_inputs_embeds, next_token_embedding], dim=1)
+        current_attention_mask = torch.cat(
+            [
+                current_attention_mask,
+                torch.ones((1, 1), device=current_inputs_embeds.device, dtype=attention_mask.dtype),
+            ],
+            dim=1,
+        )
+
+        past_key_values = None
+        for _ in range(max_new_tokens - 1):
+            if past_key_values is None:
+                inputs_embeds_for_forward = current_inputs_embeds
+                attention_mask_for_forward = current_attention_mask
+                position_ids = torch.arange(
+                    current_inputs_embeds.size(1),
+                    dtype=torch.long,
+                    device=current_inputs_embeds.device,
+                ).unsqueeze(0)
+            else:
+                inputs_embeds_for_forward = next_token_embedding
+                attention_mask_for_forward = current_attention_mask
+                position_ids = torch.tensor(
+                    [[current_inputs_embeds.size(1) - 1]],
+                    dtype=torch.long,
+                    device=current_inputs_embeds.device,
+                )
+
+            outputs = self.base_causallm(
+                inputs_embeds=inputs_embeds_for_forward,
+                attention_mask=attention_mask_for_forward,
+                position_ids=position_ids,
+                pixel_values=pixel_values if past_key_values is None else None,
+                image_grid_thw=image_grid_thw if past_key_values is None else None,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+            past_key_values = outputs.past_key_values
+            next_token = torch.argmax(outputs.logits[0, -1]).item()
+            tokens.append(next_token)
+            if next_token == self.eos_token_id:
+                break
+
+            next_token_embedding = self.embedding(
+                torch.tensor([[next_token]], device=current_inputs_embeds.device)
+            )
+            current_inputs_embeds = torch.cat([current_inputs_embeds, next_token_embedding], dim=1)
+            current_attention_mask = torch.cat(
+                [
+                    current_attention_mask,
+                    torch.ones((1, 1), device=current_inputs_embeds.device, dtype=attention_mask.dtype),
+                ],
+                dim=1,
+            )
+
+        output_ids = torch.tensor(tokens, dtype=torch.long, device=input_ids.device).unsqueeze(0)
+        if output_controller_trace:
+            return output_ids, adaptive_out.controller_trace
+        return output_ids
