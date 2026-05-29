@@ -262,3 +262,73 @@ class PatchPointerController(nn.Module):
                 break
 
         return {"selected_indices": selected, "lengths": lengths, "stopped": stopped}
+
+    def sample_select(
+        self,
+        reasoning_state: torch.Tensor,
+        patch_embeddings: torch.Tensor,
+        patch_valid_mask: torch.Tensor,
+        max_steps: Optional[int] = None,
+        temperature: float = 1.0,
+        min_patches: int = 0,
+    ) -> Dict[str, torch.Tensor]:
+        max_steps = max_steps or self.max_steps
+        temperature = max(float(temperature), 1e-6)
+        bsz, n_patches, _ = patch_embeddings.shape
+        stop_index = n_patches
+        state = self.initial_state(reasoning_state)
+        selected_mask = torch.zeros(
+            (bsz, n_patches), dtype=torch.bool, device=patch_embeddings.device
+        )
+        selected = torch.full(
+            (bsz, max_steps), -1, dtype=torch.long, device=patch_embeddings.device
+        )
+        lengths = torch.zeros(bsz, dtype=torch.long, device=patch_embeddings.device)
+        stopped = torch.zeros(bsz, dtype=torch.bool, device=patch_embeddings.device)
+        logprob_sum = torch.zeros(bsz, dtype=state.dtype, device=patch_embeddings.device)
+        entropy_sum = torch.zeros(bsz, dtype=state.dtype, device=patch_embeddings.device)
+        action_count = torch.zeros(bsz, dtype=state.dtype, device=patch_embeddings.device)
+
+        for step_idx in range(max_steps):
+            logits = self.forward(
+                state,
+                patch_embeddings,
+                patch_valid_mask=patch_valid_mask,
+                selected_mask=selected_mask,
+                allow_stop=step_idx >= min_patches,
+            )
+            dist = torch.distributions.Categorical(logits=logits / temperature)
+            action = dist.sample()
+            active = ~stopped
+            is_stop = action == stop_index
+            take_patch = active & (~is_stop)
+
+            logprob = dist.log_prob(action)
+            entropy = dist.entropy()
+            logprob_sum = logprob_sum + logprob.masked_fill(~active, 0.0)
+            entropy_sum = entropy_sum + entropy.masked_fill(~active, 0.0)
+            action_count = action_count + active.float()
+
+            if take_patch.any():
+                patch_action = action.clamp(max=n_patches - 1)
+                selected[:, step_idx] = torch.where(take_patch, patch_action, selected[:, step_idx])
+                selected_patch = self.gather_patch(patch_embeddings, patch_action)
+                updated_state = self.update_state(state, selected_patch, step_idx)
+                state = torch.where(take_patch.unsqueeze(-1), updated_state, state)
+                selected_update = torch.zeros_like(selected_mask)
+                selected_update = selected_update.scatter(1, patch_action.unsqueeze(1), True)
+                selected_mask = selected_mask | (selected_update & take_patch.unsqueeze(1))
+                lengths = lengths + take_patch.long()
+
+            stopped = stopped | (active & is_stop)
+            if stopped.all():
+                break
+
+        return {
+            "selected_indices": selected,
+            "lengths": lengths,
+            "stopped": stopped,
+            "logprob_sum": logprob_sum,
+            "entropy_sum": entropy_sum,
+            "action_count": action_count,
+        }
