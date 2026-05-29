@@ -44,6 +44,9 @@ class ControllerStateUpdater(nn.Module):
         selected_patch: torch.Tensor,
         step_idx: int,
     ) -> torch.Tensor:
+        param_dtype = self.mlp[0].weight.dtype
+        controller_state = controller_state.to(dtype=param_dtype)
+        selected_patch = selected_patch.to(dtype=param_dtype)
         pieces = [controller_state, selected_patch]
         if self.use_step_embedding:
             step = min(step_idx, self.max_steps - 1)
@@ -89,7 +92,7 @@ class PatchPointerController(nn.Module):
         self.scale = self.controller_dim ** -0.5
 
     def initial_state(self, reasoning_state: torch.Tensor) -> torch.Tensor:
-        return self.state_proj(reasoning_state)
+        return self.state_proj(reasoning_state.to(dtype=self.state_proj.weight.dtype))
 
     def forward(
         self,
@@ -101,6 +104,9 @@ class PatchPointerController(nn.Module):
     ) -> torch.Tensor:
         if patch_embeddings.dim() != 3:
             raise ValueError("patch_embeddings must have shape [B, N, D]")
+        param_dtype = self.query_proj.weight.dtype
+        controller_state = controller_state.to(dtype=param_dtype)
+        patch_embeddings = patch_embeddings.to(dtype=param_dtype)
         bsz, n_patches, _ = patch_embeddings.shape
         q = self.query_proj(controller_state).unsqueeze(-1)
         k = self.key_proj(patch_embeddings)
